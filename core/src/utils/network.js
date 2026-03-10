@@ -359,16 +359,16 @@ function sendLogin(onLoginSuccess) {
         sharer_open_id: '',
         device_info: {
             client_version: CONFIG.clientVersion,
-            sys_software: 'iOS 26.2.1',
-            network: 'wifi',
-            memory: '7672',
-            device_id: 'iPhone X<iPhone18,3>',
+            sys_software: CONFIG.device_info.sys_software,
+            network: CONFIG.device_info.network,
+            memory: CONFIG.device_info.memory,
+            device_id: CONFIG.device_info.device_id,
         },
         share_cfg_id: toLong(0),
-        scene_id: '1256',
+        scene_id: CONFIG.loginSceneId,
         report_data: {
             callback: '', cd_extend_info: '', click_id: '', clue_token: '',
-            minigame_channel: 'other', minigame_platid: 2, req_id: '', trackid: '',
+            minigame_channel: 'other-qq', minigame_platid: 1, req_id: '', trackid: '',
         },
     })).finish();
 
