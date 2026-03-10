@@ -133,6 +133,7 @@ function createDataProvider(options) {
                 bagSeedPriority,
                 intervals: body.intervals,
                 friendQuietHours: body.friendQuietHours,
+                friendOpenIds: body.friendOpenIds,
             };
             store.applyConfigSnapshot(snapshot, { accountId });
             const rev = nextConfigRevision();
@@ -143,6 +144,7 @@ function createDataProvider(options) {
                 bagSeedPriority: store.getBagSeedPriority(accountId),
                 intervals: store.getIntervals(accountId),
                 friendQuietHours: store.getFriendQuietHours(accountId),
+                friendOpenIds: store.getFriendOpenIds ? store.getFriendOpenIds(accountId) : [],
                 configRevision: rev,
             };
         },

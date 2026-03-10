@@ -21,6 +21,7 @@ const DEFAULT_OFFLINE_DELETE_SEC = 1;
 const DEFAULT_FERTILIZER_LAND_TYPES = ['gold', 'black', 'red', 'normal'];
 const FERTILIZER_LAND_TYPE_SET = new Set(DEFAULT_FERTILIZER_LAND_TYPES);
 const DEFAULT_STEAL_PLANT_BLACKLIST = [];
+const DEFAULT_FRIEND_OPEN_IDS = [];
 const DEFAULT_OFFLINE_REMINDER = {
     channel: 'webhook',
     reloginUrlMode: 'none',
@@ -84,6 +85,8 @@ const DEFAULT_ACCOUNT_CONFIG = {
         end: '07:00',
     },
     friendBlacklist: [],
+    // QQ 平台 `FriendService.SyncAll` 所需 open_id 列表（可从抓包中提取并粘贴）
+    friendOpenIds: [...DEFAULT_FRIEND_OPEN_IDS],
 };
 const ALLOWED_AUTOMATION_KEYS = new Set(Object.keys(DEFAULT_ACCOUNT_CONFIG.automation));
 
@@ -96,6 +99,7 @@ let accountFallbackConfig = {
     },
     intervals: { ...DEFAULT_ACCOUNT_CONFIG.intervals },
     friendQuietHours: { ...DEFAULT_ACCOUNT_CONFIG.friendQuietHours },
+    friendOpenIds: [...DEFAULT_FRIEND_OPEN_IDS],
 };
 
 const globalConfig = {
@@ -223,6 +227,35 @@ function normalizeBagSeedPriority(input) {
     return normalized;
 }
 
+function normalizeFriendOpenIds(input, fallback = DEFAULT_FRIEND_OPEN_IDS) {
+    const normalized = [];
+    const seen = new Set();
+
+    const push = (raw) => {
+        const value = String(raw || '').trim().toUpperCase();
+        if (!/^[0-9A-F]{32}$/.test(value)) return;
+        if (seen.has(value)) return;
+        seen.add(value);
+        normalized.push(value);
+    };
+
+    if (Array.isArray(input)) {
+        for (const item of input) push(item);
+        return normalized;
+    }
+
+    if (typeof input === 'string') {
+        const matches = input.match(/[0-9a-fA-F]{32}/g) || [];
+        for (const token of matches) push(token);
+        return normalized;
+    }
+
+    if (Array.isArray(fallback)) {
+        for (const item of fallback) push(item);
+    }
+    return normalized;
+}
+
 function cloneAccountConfig(base = DEFAULT_ACCOUNT_CONFIG) {
     const srcAutomation = (base && base.automation && typeof base.automation === 'object')
         ? base.automation
@@ -247,6 +280,7 @@ function cloneAccountConfig(base = DEFAULT_ACCOUNT_CONFIG) {
         intervals: { ...(base.intervals || DEFAULT_ACCOUNT_CONFIG.intervals) },
         friendQuietHours: { ...(base.friendQuietHours || DEFAULT_ACCOUNT_CONFIG.friendQuietHours) },
         friendBlacklist: rawBlacklist.map(Number).filter(n => Number.isFinite(n) && n > 0),
+        friendOpenIds: normalizeFriendOpenIds(base.friendOpenIds, DEFAULT_FRIEND_OPEN_IDS),
         plantingStrategy: ALLOWED_PLANTING_STRATEGIES.includes(String(base.plantingStrategy || ''))
             ? String(base.plantingStrategy)
             : DEFAULT_ACCOUNT_CONFIG.plantingStrategy,
@@ -315,6 +349,10 @@ function normalizeAccountConfig(input, fallback = accountFallbackConfig) {
 
     if (Array.isArray(src.friendBlacklist)) {
         cfg.friendBlacklist = src.friendBlacklist.map(Number).filter(n => Number.isFinite(n) && n > 0);
+    }
+
+    if (src.friendOpenIds !== undefined) {
+        cfg.friendOpenIds = normalizeFriendOpenIds(src.friendOpenIds, cfg.friendOpenIds);
     }
 
     return cfg;
@@ -469,6 +507,7 @@ function getConfigSnapshot(accountId) {
         intervals: { ...cfg.intervals },
         friendQuietHours: { ...cfg.friendQuietHours },
         friendBlacklist: [...(cfg.friendBlacklist || [])],
+        friendOpenIds: [...(cfg.friendOpenIds || [])],
         ui: { ...globalConfig.ui },
         qrLogin: normalizeQrLoginConfig(globalConfig.qrLogin),
     };
@@ -529,6 +568,10 @@ function applyConfigSnapshot(snapshot, options = {}) {
 
     if (Array.isArray(cfg.friendBlacklist)) {
         next.friendBlacklist = cfg.friendBlacklist.map(Number).filter(n => Number.isFinite(n) && n > 0);
+    }
+
+    if (cfg.friendOpenIds !== undefined) {
+        next.friendOpenIds = normalizeFriendOpenIds(cfg.friendOpenIds, next.friendOpenIds);
     }
 
     if (cfg.ui && typeof cfg.ui === 'object') {
@@ -619,12 +662,22 @@ function getFriendBlacklist(accountId) {
     return [...(getAccountConfigSnapshot(accountId).friendBlacklist || [])];
 }
 
+function getFriendOpenIds(accountId) {
+    const ids = getAccountConfigSnapshot(accountId).friendOpenIds || [];
+    return Array.isArray(ids) ? [...ids] : [];
+}
+
 function setFriendBlacklist(accountId, list) {
     const current = getAccountConfigSnapshot(accountId);
     const next = normalizeAccountConfig(current, accountFallbackConfig);
     next.friendBlacklist = Array.isArray(list) ? list.map(Number).filter(n => Number.isFinite(n) && n > 0) : [];
     setAccountConfigSnapshot(accountId, next);
     return [...next.friendBlacklist];
+}
+
+function setFriendOpenIds(accountId, value) {
+    const ret = applyConfigSnapshot({ friendOpenIds: value }, { accountId });
+    return ret.friendOpenIds || [];
 }
 
 function getUI() {
@@ -742,6 +795,8 @@ module.exports = {
     getFriendQuietHours,
     getFriendBlacklist,
     setFriendBlacklist,
+    getFriendOpenIds,
+    setFriendOpenIds,
     getUI,
     setUITheme,
     getOfflineReminder,

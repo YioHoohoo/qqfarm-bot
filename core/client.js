@@ -40,4 +40,21 @@ if (isWorkerProcess) {
     }).catch((err) => {
         mainLogger.error('runtime bootstrap failed', { error: err && err.message ? err.message : String(err) });
     });
+
+    let shuttingDown = false;
+    const shutdown = (signal) => {
+        if (shuttingDown) return;
+        shuttingDown = true;
+        mainLogger.info('shutting down', { signal });
+        try {
+            runtimeEngine.stopAllAccounts();
+        } catch (e) {
+            mainLogger.warn('stopAllAccounts failed', { error: e && e.message ? e.message : String(e) });
+        }
+        // 给 worker 一点时间执行 stopBot 清理，然后再退出主进程
+        setTimeout(() => process.exit(0), 3000).unref();
+    };
+
+    process.on('SIGINT', () => shutdown('SIGINT'));
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
 }

@@ -576,6 +576,7 @@ function startAdminServer(dataProvider) {
             const preferredSeed = store.getPreferredSeed(id);
             const bagSeedPriority = store.getBagSeedPriority(id);
             const friendQuietHours = store.getFriendQuietHours(id);
+            const friendOpenIds = store.getFriendOpenIds ? store.getFriendOpenIds(id) : [];
             const automation = store.getAutomation(id);
             const ui = store.getUI();
             const offlineReminder = store.getOfflineReminder
@@ -584,7 +585,7 @@ function startAdminServer(dataProvider) {
             const qrLogin = store.getQrLoginConfig
                 ? store.getQrLoginConfig()
                 : { apiDomain: 'q.qq.com' };
-            res.json({ ok: true, data: { intervals, strategy, preferredSeed, bagSeedPriority, friendQuietHours, automation, ui, offlineReminder, qrLogin } });
+            res.json({ ok: true, data: { intervals, strategy, preferredSeed, bagSeedPriority, friendQuietHours, friendOpenIds, automation, ui, offlineReminder, qrLogin } });
         } catch (e) {
             res.status(500).json({ ok: false, error: e.message });
         }

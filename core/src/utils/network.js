@@ -46,6 +46,8 @@ const userState = {
     gold: 0,
     exp: 0,
     coupon: 0, // 点券(ID:1002)
+    open_id: '',
+    qq_friend_recommend_authorized: 0,
 };
 
 function getUserState() { return userState; }
@@ -391,6 +393,8 @@ function sendLogin(onLoginSuccess) {
                 userState.level = toNum(reply.basic.level);
                 userState.gold = toNum(reply.basic.gold);
                 userState.exp = toNum(reply.basic.exp);
+                userState.open_id = reply.basic.open_id || '';
+                userState.qq_friend_recommend_authorized = toNum(reply.qq_friend_recommend_authorized);
 
                 // 更新状态栏
                 updateStatusFromLogin({

@@ -61,6 +61,17 @@ message SyncAllReply {
     int64 application_count = 3;
 }
 
+// --- 通过 gid 获取好友信息 (QQ 平台常用) ---
+message GetGameFriendsRequest {
+    // QQ 抓包显示为 packed repeated int64
+    repeated int64 friend_gids = 1;
+}
+
+message GetGameFriendsReply {
+    // 实际响应可能只有 1 个，也可能返回列表；用 repeated 兼容
+    repeated GameFriend game_friends = 1;
+}
+
 // ============ 好友申请 (微信同玩) ============
 
 // 申请信息

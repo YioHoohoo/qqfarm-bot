@@ -74,6 +74,7 @@ export interface SettingsState {
   bagSeedPriority: number[]
   intervals: IntervalsConfig
   friendQuietHours: FriendQuietHoursConfig
+  friendOpenIds: string[]
   automation: AutomationConfig
   ui: UIConfig
   offlineReminder: OfflineConfig
@@ -87,6 +88,7 @@ export const useSettingStore = defineStore('setting', () => {
     bagSeedPriority: [],
     intervals: {},
     friendQuietHours: { enabled: false, start: '23:00', end: '07:00' },
+    friendOpenIds: [],
     automation: {},
     ui: {},
     offlineReminder: {
@@ -122,6 +124,7 @@ export const useSettingStore = defineStore('setting', () => {
         settings.value.bagSeedPriority = Array.isArray(d.bagSeedPriority) ? d.bagSeedPriority : []
         settings.value.intervals = d.intervals || {}
         settings.value.friendQuietHours = d.friendQuietHours || { enabled: false, start: '23:00', end: '07:00' }
+        settings.value.friendOpenIds = Array.isArray(d.friendOpenIds) ? d.friendOpenIds : []
         settings.value.automation = d.automation || {}
         settings.value.ui = d.ui || {}
         settings.value.offlineReminder = {
@@ -159,6 +162,7 @@ export const useSettingStore = defineStore('setting', () => {
         bagSeedPriority: newSettings.bagSeedPriority,
         intervals: newSettings.intervals,
         friendQuietHours: newSettings.friendQuietHours,
+        friendOpenIds: newSettings.friendOpenIds,
       }
 
       await api.post('/api/settings/save', settingsPayload, {

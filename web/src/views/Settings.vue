@@ -91,6 +91,7 @@ const localSettings = ref({
   bagSeedPriority: [] as number[],
   intervals: { farmMin: 2, farmMax: 2, friendMin: 10, friendMax: 10 },
   friendQuietHours: { enabled: false, start: '23:00', end: '07:00' },
+  friendOpenIds: '',
   automation: {
     farm: false,
     farm_manage: false,
@@ -383,6 +384,7 @@ function syncLocalSettings() {
       bagSeedPriority: settings.value.bagSeedPriority || [],
       intervals: settings.value.intervals,
       friendQuietHours: settings.value.friendQuietHours,
+      friendOpenIds: Array.isArray(settings.value.friendOpenIds) ? settings.value.friendOpenIds.join('\n') : '',
       automation: settings.value.automation,
     }))
 
@@ -1040,6 +1042,18 @@ async function handleTestOffline() {
                 :disabled="!localSettings.friendQuietHours.enabled"
               />
             </div>
+          </div>
+
+          <div class="mt-4 border-t pt-3 dark:border-gray-700">
+            <BaseTextarea
+              v-model="localSettings.friendOpenIds"
+              :rows="4"
+              label="QQ 好友 open_id 列表（可选）"
+              placeholder="每行一个 32 位 open_id；仅 QQ 平台好友同步需要"
+            />
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              * 用于 QQ 平台 `FriendService.SyncAll` 的 open_ids 参数；可从抓包 decoded 数据里的 `SyncAllRequest.open_ids` 获取
+            </p>
           </div>
         </div>
 

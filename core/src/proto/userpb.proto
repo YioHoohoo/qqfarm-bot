@@ -115,6 +115,16 @@ message ReportArkClickReply {
     // 通常为空响应
 }
 
+// ============ QQ 好友推荐授权 ============
+// QQ 平台好友同步前通常会调用一次（抓包: UserService.SetQQFriendRecommendAuthorized）
+message SetQQFriendRecommendAuthorizedRequest {
+    int32 authorized = 1;
+}
+
+message SetQQFriendRecommendAuthorizedReply {
+    // 响应字段可能存在变动，先留空，未知字段会被 protobufjs 跳过
+}
+
 // ============ 服务器推送通知 ============
 
 // 基本信息变化通知 (升级/金币变化等)

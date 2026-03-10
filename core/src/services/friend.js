@@ -5,7 +5,7 @@
 const { CONFIG, PlantPhase, PHASE_NAMES } = require('../config/config');
 const { getPlantName, getPlantById, getSeedImageBySeedId } = require('../config/gameConfig');
 const { parentPort } = require('node:worker_threads');
-const { isAutomationOn, getFriendQuietHours, getFriendBlacklist, getAutomation } = require('../models/store');
+const { isAutomationOn, getFriendQuietHours, getFriendBlacklist, getFriendOpenIds, getAutomation } = require('../models/store');
 const { sendMsgAsync, getUserState, networkEvents } = require('../utils/network');
 const { types } = require('../utils/proto');
 const { toLong, toNum, toTimeSec, getServerTimeSec, log, logWarn, sleep } = require('../utils/utils');
@@ -49,6 +49,35 @@ const OP_NAMES = {
 
 let canGetHelpExp = true;
 let helpAutoDisabledByLimit = false;
+let qqFriendRecommendAuthorizedEnsured = false;
+let qqFriendOpenIdsHinted = false;
+
+async function ensureQQFriendRecommendAuthorized() {
+    if (qqFriendRecommendAuthorizedEnsured) return true;
+    const reqType = types.SetQQFriendRecommendAuthorizedRequest;
+    const repType = types.SetQQFriendRecommendAuthorizedReply;
+    if (!reqType || !repType) return false;
+
+    const state = getUserState();
+    const authorizedFromLogin = toNum(state && state.qq_friend_recommend_authorized);
+    const authorized = (authorizedFromLogin === 1 || authorizedFromLogin === 2) ? authorizedFromLogin : 1;
+
+    try {
+        const body = reqType.encode(reqType.create({ authorized })).finish();
+        const { body: replyBody } = await sendMsgAsync('gamepb.userpb.UserService', 'SetQQFriendRecommendAuthorized', body);
+        repType.decode(replyBody);
+        qqFriendRecommendAuthorizedEnsured = true;
+        return true;
+    } catch (e) {
+        logWarn('好友', `QQ 好友推荐授权失败: ${e.message}`, {
+            module: 'friend',
+            event: 'qq_friend_recommend_authorize',
+            result: 'error',
+            error: e.message,
+        });
+        return false;
+    }
+}
 
 function normalizeStealPlantBlacklist(input) {
     const source = Array.isArray(input) ? input : [];
@@ -196,7 +225,36 @@ async function getAllFriends() {
         const syncReq = types.SyncAllRequest || types.SyncAllFriendsRequest;
         const syncRep = types.SyncAllReply || types.SyncAllFriendsReply;
         if (!syncReq || !syncRep) throw new Error('SyncAll 接口类型未加载');
-        const body = syncReq.encode(syncReq.create({ open_ids: [] })).finish();
+        const configuredOpenIds = (typeof getFriendOpenIds === 'function') ? getFriendOpenIds() : [];
+        const openIds = Array.isArray(configuredOpenIds) ? configuredOpenIds : [];
+        const state = getUserState();
+        const selfOpenId = String(state && state.open_id ? state.open_id : '').trim().toUpperCase();
+        const isValidOpenId = (v) => /^[0-9A-F]{32}$/.test(String(v || '').trim().toUpperCase());
+
+        // 为兼容不同账号状态：未配置时保持旧逻辑（发送空数组）
+        const finalOpenIds = [];
+        if (openIds.length > 0) {
+            if (isValidOpenId(selfOpenId)) finalOpenIds.push(selfOpenId);
+            for (const id of openIds) {
+                const v = String(id || '').trim().toUpperCase();
+                if (!isValidOpenId(v)) continue;
+                if (finalOpenIds.includes(v)) continue;
+                finalOpenIds.push(v);
+            }
+        } else if (!qqFriendOpenIdsHinted) {
+            qqFriendOpenIdsHinted = true;
+            logWarn('好友', 'QQ 平台好友同步需要配置 open_id 列表（设置页: QQ 好友 open_id 列表），否则好友列表可能为空', {
+                module: 'friend',
+                event: 'friend_open_ids_missing',
+                result: 'warn',
+            });
+        }
+
+        if (finalOpenIds.length > 0) {
+            await ensureQQFriendRecommendAuthorized();
+        }
+
+        const body = syncReq.encode(syncReq.create({ open_ids: finalOpenIds })).finish();
         const { body: replyBody } = await sendMsgAsync('gamepb.friendpb.FriendService', 'SyncAll', body);
         return syncRep.decode(replyBody);
     }

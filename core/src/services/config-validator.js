@@ -132,6 +132,7 @@ const ACCOUNT_CONFIG_SCHEMA = {
         preferredSeedId: { type: 'number', min: 0, default: 0 },
         friendQuietHours: QUIET_HOURS_SCHEMA,
         friendBlacklist: { type: 'array', items: { type: 'number' }, default: [] },
+        friendOpenIds: { type: 'array', items: { type: 'string' }, default: [] },
     },
     additionalProperties: false,
 };

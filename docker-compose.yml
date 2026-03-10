@@ -5,6 +5,9 @@ services:
       dockerfile: core/Dockerfile
     container_name: qq-farm-bot-ui
     restart: unless-stopped
+    init: true
+    stop_signal: SIGTERM
+    stop_grace_period: 15s
     environment:
       ADMIN_PASSWORD: admin
       TZ: Asia/Shanghai
