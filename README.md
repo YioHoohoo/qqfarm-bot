@@ -128,6 +128,15 @@ docker compose logs -f
 docker compose down
 ```
 
+### 两容器架构（Transport + Bot/UI）
+
+当前 `docker-compose.yml` 默认启用两容器模式：
+
+- `qq-farm-transport`：仅负责与游戏服务器建立 WSS 连接、协议封装与加密、推送转发
+- `qq-farm-bot-ui`：负责 Web 面板、业务逻辑、proto 编解码与自动化
+
+请确保 `TRANSPORT_SECRET` 在两个服务中保持一致（建议替换为强随机字符串）。
+
 ### 数据持久化
 
 `docker-compose.yml` 已将数据目录挂载：

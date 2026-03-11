@@ -27,6 +27,12 @@ const CONFIG = {
     },
     loginSceneId: '2079',
 
+    // ============ Transport (可选：拆分 WSS 发送链路) ============
+    // Transport 作为独立容器运行时：Bot 通过该地址转发所有 WSS 请求
+    transportListenPort: Number(process.env.TRANSPORT_PORT || 3100),
+    transportRemoteUrl: process.env.TRANSPORT_REMOTE_URL || '',
+    transportSecret: process.env.TRANSPORT_SECRET || '',
+
     // ============ 好友 open_id 自动维护 ============
     // SyncAll 回包中连续未返回某 open_id 达到阈值后自动清理
     friendOpenIdMissPruneThreshold: '3',

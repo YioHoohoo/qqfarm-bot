@@ -1,4 +1,20 @@
 services:
+  qq-farm-transport:
+    build:
+      context: .
+      dockerfile: core/Dockerfile
+    container_name: qq-farm-transport
+    restart: unless-stopped
+    init: true
+    stop_signal: SIGTERM
+    stop_grace_period: 15s
+    environment:
+      TZ: Asia/Shanghai
+      TRANSPORT_PORT: 3100
+      # 建议修改为强随机字符串，并与 qq-farm-bot-ui 保持一致
+      TRANSPORT_SECRET: change_me_transport_secret
+    command: ["node", "transport.js"]
+
   qq-farm-bot-ui:
     build:
       context: .
@@ -8,9 +24,14 @@ services:
     init: true
     stop_signal: SIGTERM
     stop_grace_period: 15s
+    depends_on:
+      - qq-farm-transport
     environment:
       ADMIN_PASSWORD: admin
       TZ: Asia/Shanghai
+      TRANSPORT_MODE: remote
+      TRANSPORT_REMOTE_URL: ws://qq-farm-transport:3100
+      TRANSPORT_SECRET: change_me_transport_secret
     ports:
       - "3000:3000"
     volumes:
