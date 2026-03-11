@@ -10,9 +10,10 @@ services:
     stop_grace_period: 15s
     environment:
       TZ: Asia/Shanghai
-      TRANSPORT_PORT: 3100
+      # 注意：`.env` 仅用于变量替换；这里用 ${...} 才能让 `.env` 生效
+      TRANSPORT_PORT: ${TRANSPORT_PORT:-3100}
       # 建议修改为强随机字符串，并与 qq-farm-bot-ui 保持一致
-      TRANSPORT_SECRET: change_me_transport_secret
+      TRANSPORT_SECRET: ${TRANSPORT_SECRET:-change_me_transport_secret}
     command: ["node", "transport.js"]
 
   qq-farm-bot-ui:
@@ -27,14 +28,15 @@ services:
     depends_on:
       - qq-farm-transport
     environment:
-      ADMIN_PASSWORD: admin
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin}
       TZ: Asia/Shanghai
       TRANSPORT_MODE: remote
-      TRANSPORT_REMOTE_URL: ws://qq-farm-transport:3100
-      TRANSPORT_SECRET: change_me_transport_secret
+      # 如需改端口：同时修改 `TRANSPORT_PORT` 和本项，或直接在 `.env` 中设置 `TRANSPORT_REMOTE_URL`
+      TRANSPORT_REMOTE_URL: ${TRANSPORT_REMOTE_URL:-ws://qq-farm-transport:3100}
+      TRANSPORT_SECRET: ${TRANSPORT_SECRET:-change_me_transport_secret}
       # 允许在更新/重启 bot 容器时保持 “机器人 → 游戏服” 的 WSS 不主动断开
       # 注意：手动停止账号仍会主动断开（通过 panel 停止账号）
-      TRANSPORT_PERSIST_SESSION_ON_SHUTDOWN: "1"
+      TRANSPORT_PERSIST_SESSION_ON_SHUTDOWN: ${TRANSPORT_PERSIST_SESSION_ON_SHUTDOWN:-1}
     ports:
       - "3000:3000"
     volumes:
