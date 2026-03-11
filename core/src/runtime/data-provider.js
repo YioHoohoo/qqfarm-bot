@@ -193,7 +193,7 @@ function createDataProvider(options) {
             const accountId = resolveAccountRefId(accountRef);
             const acc = findAccountByAnyRef(accountId || accountRef);
             if (!acc) return false;
-            if (accountId) stopWorker(accountId);
+            if (accountId) stopWorker(accountId, { reason: 'account_stop' });
             return true;
         },
 

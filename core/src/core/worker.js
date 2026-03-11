@@ -478,7 +478,7 @@ onMasterMessage(async (msg) => {
         if (msg.type === 'start') {
             await startBot(msg.config);
         } else if (msg.type === 'stop') {
-            await stopBot();
+            await stopBot({ reason: msg.reason });
         } else if (msg.type === 'api_call') {
             handleApiCall(msg);
         } else if (msg.type === 'config_sync') {
@@ -615,10 +615,19 @@ async function startBot(config) {
     workerScheduler.setIntervalTask('status_sync', 3000, syncStatus, { preventOverlap: true });
 }
 
-async function stopBot() {
+async function stopBot(options = {}) {
     if (!isRunning) return exitWorker(0);
     isRunning = false;
     loginReady = false;
+    const reason = (options && typeof options === 'object' && !Array.isArray(options) && options.reason !== undefined)
+        ? String(options.reason || '')
+        : '';
+    const persistSessionOnShutdownEnv = String(process.env.TRANSPORT_PERSIST_SESSION_ON_SHUTDOWN || '').trim().toLowerCase();
+    const persistSessionOnShutdown = (persistSessionOnShutdownEnv === '1'
+        || persistSessionOnShutdownEnv === 'true'
+        || persistSessionOnShutdownEnv === 'yes'
+        || persistSessionOnShutdownEnv === 'on');
+    const persistRemoteSession = reason === 'shutdown' && persistSessionOnShutdown;
     stopUnifiedScheduler();
     networkEvents.off('kickout', onKickout);
     if (onWsError) {
@@ -640,7 +649,22 @@ async function stopBot() {
     workerScheduler.clearAll();
     cleanup();
     const ws = getWs();
-    if (ws) ws.close();
+    if (ws && typeof ws.close === 'function') {
+        try {
+            // 本地直连: ws 为真实 WebSocket 实例；remote transport: ws 为 wrapper 对象
+            if (typeof ws.send === 'function') {
+                ws.close();
+            } else {
+                const ret = ws.close({
+                    disconnectSession: !persistRemoteSession,
+                    timeoutMs: persistRemoteSession ? 0 : 1500,
+                });
+                if (ret && typeof ret.then === 'function') {
+                    await ret.catch(() => null);
+                }
+            }
+        } catch { }
+    }
     exitWorker(0);
 }
 

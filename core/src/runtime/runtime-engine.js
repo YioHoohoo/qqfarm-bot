@@ -290,7 +290,7 @@ function createRuntimeEngine(options = {}) {
 
   function stopAllAccounts() {
     for (const accountId of Object.keys(workers)) {
-      stopWorker(accountId)
+      stopWorker(accountId, { reason: 'shutdown' })
     }
   }
 

@@ -32,6 +32,9 @@ services:
       TRANSPORT_MODE: remote
       TRANSPORT_REMOTE_URL: ws://qq-farm-transport:3100
       TRANSPORT_SECRET: change_me_transport_secret
+      # 允许在更新/重启 bot 容器时保持 “机器人 → 游戏服” 的 WSS 不主动断开
+      # 注意：手动停止账号仍会主动断开（通过 panel 停止账号）
+      TRANSPORT_PERSIST_SESSION_ON_SHUTDOWN: "1"
     ports:
       - "3000:3000"
     volumes:

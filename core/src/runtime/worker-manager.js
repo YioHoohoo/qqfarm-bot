@@ -138,15 +138,18 @@ function createWorkerManager(options) {
         return true;
     }
 
-    function stopWorker(accountId) {
+    function stopWorker(accountId, options = {}) {
         const worker = workers[accountId];
         if (!worker) return;
 
         const proc = worker.process;
         worker.stopping = true;
-        worker.process.send({ type: 'stop' });
+        const reason = (options && typeof options === 'object' && !Array.isArray(options) && options.reason !== undefined)
+            ? String(options.reason || '')
+            : '';
+        worker.process.send({ type: 'stop', reason });
         // process.kill will happen in 'exit' handler or we can force it
-        managerScheduler.setTimeoutTask(`force_kill_${accountId}`, 1000, () => {
+        managerScheduler.setTimeoutTask(`force_kill_${accountId}`, 6000, () => {
             const current = workers[accountId];
             if (current && current.process === proc) {
                 current.process.kill();
@@ -185,7 +188,7 @@ function createWorkerManager(options) {
             return startOnce();
         }
         proc.once('exit', startOnce);
-        stopWorker(accountId);
+        stopWorker(accountId, { reason: 'restart' });
         managerScheduler.setTimeoutTask(`restart_fallback_${accountId}`, 1500, () => {
             if (started) return;
             killIfStale();
@@ -252,7 +255,7 @@ function createWorkerManager(options) {
                         worker.name,
                         { reason: 'offline_timeout', offlineMs },
                     );
-                    stopWorker(accountId);
+                    stopWorker(accountId, { reason: 'offline_delete' });
                     try {
                         deleteAccount(accountId);
                     } catch (e) {
@@ -301,7 +304,7 @@ function createWorkerManager(options) {
                 offlineMs: 0,
             });
             addAccountLog('kickout_stop', `账号 ${worker.name} 被踢下线，已自动停止`, accountId, worker.name, { reason });
-            stopWorker(accountId);
+            stopWorker(accountId, { reason: `kickout:${reason}` });
         } else if (msg.type === 'friend_blacklist_add') {
             const gid = Number(msg.gid);
             if (!Number.isFinite(gid) || gid <= 0) return;

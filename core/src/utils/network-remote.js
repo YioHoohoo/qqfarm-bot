@@ -198,12 +198,15 @@ function ensureTransportConnected() {
     const secret = getTransportSecret();
 
     transportConnecting = new Promise((resolve, reject) => {
+        let settled = false;
         const ws = new WebSocket(url, {
             headers: secret ? { 'x-transport-secret': secret } : {},
         });
         transportWs = ws;
 
         ws.on('open', () => {
+            if (settled) return;
+            settled = true;
             transportConnecting = null;
             resolve();
         });
@@ -212,12 +215,16 @@ function ensureTransportConnected() {
             handleTransportMessage(data);
         });
 
-        ws.on('close', () => {
+        ws.on('close', (code) => {
             transportConnecting = null;
             transportWs = null;
             gameReadyState = WebSocket.CLOSED;
             rejectAllPendingRequests('transport 连接关闭');
             scheduleAutoReconnect();
+            if (!settled) {
+                settled = true;
+                reject(new Error(`transport 连接关闭(code=${Number(code || 0)})`));
+            }
         });
 
         ws.on('error', (err) => {
@@ -225,7 +232,10 @@ function ensureTransportConnected() {
             transportWs = null;
             gameReadyState = WebSocket.CLOSED;
             rejectAllPendingRequests('transport 连接错误');
-            reject(err);
+            if (!settled) {
+                settled = true;
+                reject(err);
+            }
         });
     });
 
@@ -508,11 +518,17 @@ function reconnect(newCode) {
 function getWs() {
     return {
         readyState: gameReadyState,
-        close: () => {
-            ensureTransportConnected()
-                .then(() => sendTransportRequest({ type: 'session_disconnect' }, 5000))
-                .catch(() => { })
-                .finally(() => { gameReadyState = WebSocket.CLOSED; });
+        close: (options = {}) => {
+            const opts = (options && typeof options === 'object' && !Array.isArray(options)) ? options : {};
+            const disconnectSession = opts.disconnectSession !== undefined ? !!opts.disconnectSession : true;
+            const timeoutMs = Number(opts.timeoutMs || 2000) || 2000;
+
+            gameReadyState = WebSocket.CLOSED;
+            if (!disconnectSession) return Promise.resolve();
+
+            return ensureTransportConnected()
+                .then(() => sendTransportRequest({ type: 'session_disconnect' }, timeoutMs))
+                .catch(() => null);
         },
     };
 }

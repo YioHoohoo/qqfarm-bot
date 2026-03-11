@@ -137,6 +137,27 @@ docker compose down
 
 请确保 `TRANSPORT_SECRET` 在两个服务中保持一致（建议替换为强随机字符串）。
 
+### Docker 更新不断线（机器人 → 游戏服）
+
+两容器模式下，如果只更新 `qq-farm-bot-ui`（不重启 `qq-farm-transport`），理论上可以保持与游戏服的 WSS 连接不断开。
+
+建议做法：
+
+1. 在 `qq-farm-bot-ui` 中设置 `TRANSPORT_PERSIST_SESSION_ON_SHUTDOWN=1`（`docker-compose.yml` 已默认配置）
+2. 更新时只重建/重启 `qq-farm-bot-ui`，不要动 `qq-farm-transport`：
+
+```bash
+# 先构建（不影响正在运行的容器）
+docker compose build qq-farm-bot-ui
+
+# 再只重启 bot-ui（不重启 transport，不拉起依赖）
+docker compose up -d --no-deps qq-farm-bot-ui
+```
+
+注意：
+- 如果你更新/重启了 `qq-farm-transport`，WSS 一定会断开（因为它持有到游戏服的连接）。
+- 通过面板“停止账号”仍会主动断开该账号对应的游戏连接。
+
 ### 数据持久化
 
 `docker-compose.yml` 已将数据目录挂载：

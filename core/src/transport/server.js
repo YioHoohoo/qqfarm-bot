@@ -77,6 +77,9 @@ class TransportSession {
         this.lastUrl = '';
         this.clients = new Set();
         this.wsErrorState = { code: 0, at: 0, message: '' };
+        this.userGid = 0;
+        this.heartbeatTimer = null;
+        this.heartbeatInFlight = false;
     }
 
     get readyState() {
@@ -98,6 +101,47 @@ class TransportSession {
 
     unsubscribe(client) {
         this.clients.delete(client);
+    }
+
+    startHeartbeat() {
+        if (this.heartbeatTimer) return;
+        const rawInterval = Number(CONFIG.heartbeatInterval || 25000);
+        const intervalMs = Math.max(5000, Math.min(60000, Number.isFinite(rawInterval) ? rawInterval : 25000));
+
+        this.heartbeatTimer = setInterval(() => {
+            // 仅在没有 bot client 在线时，由 transport 兜底心跳，避免重复心跳
+            if (this.clients.size > 0) return;
+            if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+            if (!this.userGid) return;
+            if (this.heartbeatInFlight) return;
+            if (!types || !types.HeartbeatRequest) return;
+
+            this.heartbeatInFlight = true;
+            const body = types.HeartbeatRequest.encode(types.HeartbeatRequest.create({
+                gid: toLong(this.userGid),
+                client_version: CONFIG.clientVersion,
+            })).finish();
+
+            this.rpc('gamepb.userpb.UserService', 'Heartbeat', body, 7000)
+                .catch((e) => {
+                    logger.warn('heartbeat failed', { accountId: this.accountId, error: e && e.message ? e.message : String(e) });
+                })
+                .finally(() => {
+                    this.heartbeatInFlight = false;
+                });
+        }, intervalMs);
+
+        if (this.heartbeatTimer && typeof this.heartbeatTimer.unref === 'function') {
+            this.heartbeatTimer.unref();
+        }
+    }
+
+    stopHeartbeat() {
+        if (this.heartbeatTimer) {
+            try { clearInterval(this.heartbeatTimer); } catch { }
+        }
+        this.heartbeatTimer = null;
+        this.heartbeatInFlight = false;
     }
 
     broadcast(payload) {
@@ -148,6 +192,7 @@ class TransportSession {
 
         this.lastUrl = nextUrl;
         this.connecting = new Promise((resolve, reject) => {
+            let settled = false;
             const ws = new WebSocket(nextUrl, {
                 headers: {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36 MicroMessenger/7.0.20.1781(0x6700143B) NetType/WIFI MiniProgramEnv/Windows WindowsWechat/WMPF WindowsWechat(0x63090a13)',
@@ -162,6 +207,8 @@ class TransportSession {
             };
 
             ws.on('open', () => {
+                if (settled) return;
+                settled = true;
                 this.clearWsError();
                 this.broadcast({ type: 'ws_state', state: 'open', readyState: WebSocket.OPEN });
                 finalize();
@@ -179,6 +226,13 @@ class TransportSession {
                     ws.removeAllListeners();
                 } catch { }
                 if (this.ws === ws) this.ws = null;
+                this.stopHeartbeat();
+                this.userGid = 0;
+                if (!settled) {
+                    settled = true;
+                    finalize();
+                    reject(new Error(`连接关闭(code=${Number(code || 0)})`));
+                }
             });
 
             ws.on('error', (err) => {
@@ -192,7 +246,8 @@ class TransportSession {
                     }
                 }
                 // connect phase error
-                if (this.connecting) {
+                if (!settled && this.connecting) {
+                    settled = true;
                     finalize();
                     reject(new Error(message || 'ws_error'));
                 }
@@ -204,11 +259,13 @@ class TransportSession {
 
     disconnect(reason = 'disconnect') {
         this.rejectAllPending(`请求已中断: ${reason}`);
+        this.stopHeartbeat();
         const ws = this.ws;
         this.ws = null;
         this.connecting = null;
         this.clientSeq = 1;
         this.serverSeq = 0;
+        this.userGid = 0;
         try {
             if (ws) {
                 ws.removeAllListeners();
@@ -292,6 +349,27 @@ class TransportSession {
             if (msgType === 2) {
                 const errorCode = toNum(meta.error_code);
                 const clientSeqVal = toNum(meta.client_seq);
+
+                // 登录成功后缓存 gid，用于在 bot 容器断开时由 transport 兜底心跳
+                if (errorCode === 0
+                    && String(meta.service_name || '') === 'gamepb.userpb.UserService'
+                    && String(meta.method_name || '') === 'Login'
+                    && types
+                    && types.LoginReply
+                    && msg.body
+                    && msg.body.length > 0) {
+                    try {
+                        const reply = types.LoginReply.decode(msg.body);
+                        const gid = toNum(reply && reply.basic && reply.basic.gid);
+                        if (gid > 0) {
+                            this.userGid = gid;
+                            this.startHeartbeat();
+                        }
+                    } catch (e) {
+                        logger.warn('decode login reply failed', { accountId: this.accountId, error: e && e.message ? e.message : String(e) });
+                    }
+                }
+
                 const cb = this.pending.get(clientSeqVal);
                 if (cb) {
                     this.pending.delete(clientSeqVal);
