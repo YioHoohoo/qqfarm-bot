@@ -9,7 +9,7 @@ const { getAutomation, getPreferredSeed, getConfigSnapshot, applyConfigSnapshot 
 const { checkAndClaimEmails } = require('../services/email');
 const { getEmailDailyState } = require('../services/email');
 const { checkFarm, startFarmCheckLoop, stopFarmCheckLoop, refreshFarmCheckLoop, getLandsDetail, getAvailableSeeds, runFarmOperation, runFertilizerByConfig } = require('../services/farm');
-const { checkFriends, startFriendCheckLoop, stopFriendCheckLoop, refreshFriendCheckLoop, getFriendsList, getFriendLandsDetail, doFriendOperation } = require('../services/friend');
+const { checkFriends, startFriendCheckLoop, stopFriendCheckLoop, refreshFriendCheckLoop, getFriendsList, getGameFriendsByGids, getFriendLandsDetail, doFriendOperation } = require('../services/friend');
 const { getInteractRecords } = require('../services/interact');
 const { processInviteCodes } = require('../services/invite');
 const { autoBuyOrganicFertilizer, buyFreeGifts, getFreeGiftDailyState } = require('../services/mall');
@@ -23,9 +23,9 @@ const { initStatusBar, setStatusPlatform, statusData } = require('../services/st
 const { setRecordGoldExpHook } = require('../services/status');
 const { cleanupTaskSystem, checkAndClaimTasks, getTaskClaimDailyState, getTaskDailyStateLikeApp, getGrowthTaskStateLikeApp } = require('../services/task');
 const { sellAllFruits, getBag, getBagItems, openFertilizerGiftPacksSilently } = require('../services/warehouse');
-const { connect, cleanup, getWs, getUserState, networkEvents } = require('../utils/network');
-const { loadProto } = require('../utils/proto');
-const { setLogHook, log, toNum } = require('../utils/utils');
+const { connect, cleanup, getWs, getUserState, networkEvents, sendMsgAsync } = require('../utils/network');
+const { loadProto, types, getRoot } = require('../utils/proto');
+const { setLogHook, log, logWarn, toNum } = require('../utils/utils');
 const { validateAutomation, validateIntervals, validateQuietHours } = require('../services/config-validator');
 
 if (parentPort && workerData && workerData.accountId && !process.env.FARM_ACCOUNT_ID) {
@@ -116,6 +116,7 @@ let harvestSellRunning = false;
 let onWsError = null;
 let wsErrorHandledAt = 0;
 let lastDailyRunDate = '';
+let friendOpenIdsDiscoverRunning = false;
 const workerScheduler = createScheduler('worker');
 const INTERVAL_MAX_SEC = 86400;
 
@@ -162,6 +163,90 @@ function startDailyRoutineTimer() {
         if (today === lastDailyRunDate) return;
         lastDailyRunDate = today;
         runDailyRoutines(true).catch(() => null);
+    });
+}
+
+function stopFriendOpenIdsDiscoverTimer() {
+    workerScheduler.clear('friend_open_ids_discover_interval');
+}
+
+async function discoverFriendOpenIdsFromVisitors() {
+    if (!loginReady) return false;
+    if (CONFIG.platform !== 'qq') return false;
+    if (!CONFIG.friendOpenIdAutoDiscoverEnabled) return false;
+    if (friendOpenIdsDiscoverRunning) return false;
+
+    friendOpenIdsDiscoverRunning = true;
+    try {
+        const records = await getInteractRecords().catch(() => []);
+        const list = Array.isArray(records) ? records : [];
+
+        const state = getUserState();
+        const selfGid = toNum(state && state.gid);
+        const selfOpenId = String(state && state.open_id ? state.open_id : '').trim().toUpperCase();
+        const isValidOpenId = (v) => /^[0-9A-F]{32}$/.test(String(v || '').trim().toUpperCase());
+
+        const maxRecords = Math.max(1, Number(CONFIG.friendOpenIdAutoDiscoverMaxRecords || 50) || 50);
+        const maxGids = Math.max(1, Number(CONFIG.friendOpenIdAutoDiscoverMaxGids || 50) || 50);
+        const gids = [];
+        const gidSeen = new Set();
+
+        for (const record of list.slice(0, maxRecords)) {
+            const gid = toNum(record && (record.oprGid || record.opr_gid || record.visitorGid || record.visitor_gid));
+            if (!gid || gid <= 0) continue;
+            if (selfGid && gid === selfGid) continue;
+            if (gidSeen.has(gid)) continue;
+            gidSeen.add(gid);
+            gids.push(gid);
+            if (gids.length >= maxGids) break;
+        }
+
+        if (gids.length === 0) return false;
+
+        const friends = await getGameFriendsByGids(gids).catch(() => []);
+        const openIds = [];
+        const openIdSeen = new Set();
+        const rawFriends = Array.isArray(friends) ? friends : [];
+
+        for (const f of rawFriends) {
+            const oid = String(f && f.open_id ? f.open_id : '').trim().toUpperCase();
+            if (!isValidOpenId(oid)) continue;
+            if (selfOpenId && oid === selfOpenId) continue;
+            if (openIdSeen.has(oid)) continue;
+            openIdSeen.add(oid);
+            openIds.push(oid);
+        }
+
+        if (openIds.length === 0) return false;
+
+        sendToMaster({
+            type: 'friend_open_ids_discovered',
+            openIds,
+            source: 'interact_records',
+            at: Date.now(),
+        });
+        return true;
+    } catch (e) {
+        logWarn('好友', `从访客记录补全 open_id 失败: ${e.message}`, {
+            module: 'friend',
+            event: 'friend_open_ids_discover',
+            result: 'error',
+        });
+        return false;
+    } finally {
+        friendOpenIdsDiscoverRunning = false;
+    }
+}
+
+function startFriendOpenIdsDiscoverTimer() {
+    stopFriendOpenIdsDiscoverTimer();
+    if (CONFIG.platform !== 'qq') return;
+    if (!CONFIG.friendOpenIdAutoDiscoverEnabled) return;
+
+    const intervalMs = Math.max(60_000, Number(CONFIG.friendOpenIdAutoDiscoverIntervalMs || (30 * 60 * 1000)) || (30 * 60 * 1000));
+    workerScheduler.setIntervalTask('friend_open_ids_discover_interval', intervalMs, discoverFriendOpenIdsFromVisitors, {
+        preventOverlap: true,
+        runImmediately: true,
     });
 }
 
@@ -517,6 +602,8 @@ async function startBot(config) {
         startUnifiedScheduler();
         // 每日礼包/任务改为跨日调度，不在农场轮询内执行
         startDailyRoutineTimer();
+        // 从访客记录补全 QQ open_id（用于 SyncAll）
+        startFriendOpenIdsDiscoverTimer();
 
         // 立即发送一次状态
         syncStatus();
@@ -564,6 +651,153 @@ function onKickout(payload) {
     workerScheduler.setTimeoutTask('kickout_stop', 200, () => {
         stopBot().catch(() => exitWorker(0));
     });
+}
+
+function isPlainObject(value) {
+    return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function resolveProtoType(typeRef) {
+    const ref = String(typeRef || '').trim();
+    if (!ref) return null;
+
+    // Prefer named mappings (e.g. "SyncAllRequest")
+    if (types && types[ref]) return types[ref];
+
+    // Fallback to full name lookup (e.g. "gamepb.friendpb.SyncAllRequest")
+    const root = (typeof getRoot === 'function') ? getRoot() : null;
+    if (root && typeof root.lookupType === 'function') {
+        try {
+            return root.lookupType(ref);
+        } catch {
+            // ignore lookup failures
+        }
+    }
+    return null;
+}
+
+function collectUnknownProtoFields(messageType, value, path = '', depth = 0) {
+    if (!messageType || !messageType.fields || !isPlainObject(value)) return [];
+    if (depth > 16) return [];
+
+    const unknown = [];
+    const prefix = path ? `${path}.` : '';
+    const fields = messageType.fields || {};
+
+    for (const key of Object.keys(value)) {
+        const field = fields[key];
+        if (!field) {
+            unknown.push(`${prefix}${key}`);
+            continue;
+        }
+
+        const resolved = field.resolvedType;
+        if (!resolved || !resolved.fields) continue; // not a message type
+
+        const childPath = `${prefix}${key}`;
+        const v = value[key];
+
+        if (field.repeated) {
+            if (Array.isArray(v)) {
+                for (let i = 0; i < v.length; i += 1) {
+                    unknown.push(...collectUnknownProtoFields(resolved, v[i], `${childPath}[${i}]`, depth + 1));
+                }
+            }
+            continue;
+        }
+
+        if (field.map) {
+            if (isPlainObject(v)) {
+                for (const [mk, mv] of Object.entries(v)) {
+                    unknown.push(...collectUnknownProtoFields(resolved, mv, `${childPath}.${mk}`, depth + 1));
+                }
+            }
+            continue;
+        }
+
+        unknown.push(...collectUnknownProtoFields(resolved, v, childPath, depth + 1));
+    }
+
+    return unknown;
+}
+
+async function wssDebugCall(rawPayload) {
+    const payload = (rawPayload && typeof rawPayload === 'object') ? rawPayload : {};
+    const serviceName = String(payload.serviceName || payload.service_name || payload.service || '').trim();
+    const methodName = String(payload.methodName || payload.method_name || payload.method || '').trim();
+    if (!serviceName) throw new Error('Missing serviceName');
+    if (!methodName) throw new Error('Missing methodName');
+
+    const requestTypeRef = String(payload.requestType || payload.request_type || payload.type || '').trim();
+    if (!requestTypeRef) throw new Error('Missing requestType');
+    const responseTypeRef = String(payload.responseType || payload.response_type || '').trim();
+
+    const request = (payload.request !== undefined) ? payload.request
+        : (payload.body !== undefined) ? payload.body
+            : (payload.message !== undefined) ? payload.message
+                : {};
+    const requestBody = (request && typeof request === 'object') ? request : {};
+
+    const strict = payload.strict === undefined ? true : !!payload.strict;
+    const decodeResponse = payload.decodeResponse === undefined ? true : !!payload.decodeResponse;
+
+    const timeoutMsRaw = payload.timeoutMs !== undefined ? payload.timeoutMs : payload.timeout;
+    let timeoutMs = Number.parseInt(timeoutMsRaw, 10);
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) timeoutMs = 10000;
+    timeoutMs = Math.max(500, Math.min(30000, timeoutMs));
+
+    const reqType = resolveProtoType(requestTypeRef);
+    if (!reqType) throw new Error(`Unknown requestType: ${requestTypeRef}`);
+
+    if (strict) {
+        const unknownFields = collectUnknownProtoFields(reqType, requestBody);
+        if (unknownFields.length > 0) {
+            throw new Error(`Unknown proto fields: ${unknownFields.join(', ')}`);
+        }
+    }
+
+    const reqMessage = reqType.fromObject ? reqType.fromObject(requestBody) : reqType.create(requestBody);
+    const reqBytes = reqType.encode(reqMessage).finish();
+
+    const { body: replyBody, meta } = await sendMsgAsync(serviceName, methodName, reqBytes, timeoutMs);
+
+    const ret = {
+        service_name: serviceName,
+        method_name: methodName,
+        request_type: reqType.fullName || requestTypeRef,
+        response_type: responseTypeRef || '',
+        request_hex: Buffer.from(reqBytes).toString('hex'),
+        response_hex: Buffer.from(replyBody || []).toString('hex'),
+        meta: null,
+        response: null,
+        response_decode_error: null,
+    };
+
+    try {
+        if (types && types.GateMeta && meta) {
+            ret.meta = types.GateMeta.toObject(meta, { longs: String, enums: String, bytes: String, defaults: true });
+        } else {
+            ret.meta = meta || null;
+        }
+    } catch {
+        ret.meta = meta || null;
+    }
+
+    if (decodeResponse && responseTypeRef) {
+        const repType = resolveProtoType(responseTypeRef);
+        if (!repType) {
+            ret.response_decode_error = `Unknown responseType: ${responseTypeRef}`;
+            return ret;
+        }
+        try {
+            const repMessage = repType.decode(replyBody || Buffer.alloc(0));
+            ret.response = repType.toObject(repMessage, { longs: String, enums: String, bytes: String, defaults: true });
+        } catch (e) {
+            ret.response_decode_error = e && e.message ? e.message : String(e || 'decode error');
+        }
+    }
+
+    return ret;
 }
 
 // 处理来自 Admin 面板的直接调用请求 (如: 购买种子、开关设置等)
@@ -620,6 +854,10 @@ async function handleApiCall(msg) {
                 break;
             case 'getSchedulers':
                 result = getSchedulerRegistrySnapshot();
+                break;
+            case 'wssDebug':
+            case 'wss_debug':
+                result = await wssDebugCall(args && args[0] ? args[0] : {});
                 break;
             default:
                 error = 'Unknown method';

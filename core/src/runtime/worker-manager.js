@@ -19,6 +19,8 @@ function createWorkerManager(options) {
         addOrUpdateAccount,
         deleteAccount,
         upsertFriendBlacklist,
+        mergeFriendOpenIdsDiscovered,
+        syncFriendOpenIdsProbe,
         broadcastConfigToWorkers,
         onStatusSync,
         onWorkerLog,
@@ -308,6 +310,61 @@ function createWorkerManager(options) {
                 const changed = !!upsertFriendBlacklist(accountId, gid);
                 if (changed && typeof broadcastConfigToWorkers === 'function') {
                     broadcastConfigToWorkers(accountId);
+                }
+            } catch {}
+        } else if (msg.type === 'friend_open_ids_probe') {
+            if (typeof syncFriendOpenIdsProbe !== 'function') return;
+            try {
+                const ret = syncFriendOpenIdsProbe(accountId, msg);
+                const removed = ret && Array.isArray(ret.removedOpenIds) ? ret.removedOpenIds : [];
+                const changedOpenIds = !!(ret && ret.openIdsChanged);
+                if (changedOpenIds && typeof broadcastConfigToWorkers === 'function') {
+                    broadcastConfigToWorkers(accountId);
+                }
+                if (removed.length > 0) {
+                    log('好友', `检测到 open_id 连续未返回，已自动移除: ${removed.join(', ')}`, {
+                        accountId: String(accountId),
+                        accountName: worker.name,
+                        module: 'friend',
+                        event: 'friend_open_ids_prune',
+                        result: 'ok',
+                        removed,
+                    });
+                    addAccountLog(
+                        'friend_open_ids_prune',
+                        `自动清理好友 open_id: ${removed.join(', ')}`,
+                        accountId,
+                        worker.name,
+                        { removed },
+                    );
+                }
+            } catch {}
+        } else if (msg.type === 'friend_open_ids_discovered') {
+            if (typeof mergeFriendOpenIdsDiscovered !== 'function') return;
+            try {
+                const ret = mergeFriendOpenIdsDiscovered(accountId, msg);
+                const added = ret && Array.isArray(ret.addedOpenIds) ? ret.addedOpenIds : [];
+                const changedOpenIds = !!(ret && ret.openIdsChanged);
+                if (changedOpenIds && typeof broadcastConfigToWorkers === 'function') {
+                    broadcastConfigToWorkers(accountId);
+                }
+                if (added.length > 0) {
+                    log('好友', `已自动补全好友 open_id: +${added.length}`, {
+                        accountId: String(accountId),
+                        accountName: worker.name,
+                        module: 'friend',
+                        event: 'friend_open_ids_discover',
+                        result: 'ok',
+                        addedCount: added.length,
+                        added,
+                    });
+                    addAccountLog(
+                        'friend_open_ids_discover',
+                        `自动补全好友 open_id: +${added.length}`,
+                        accountId,
+                        worker.name,
+                        { addedCount: added.length, added },
+                    );
                 }
             } catch {}
         } else if (msg.type === 'api_response') {

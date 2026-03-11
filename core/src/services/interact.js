@@ -78,21 +78,23 @@ function resolveCropName(cropId) {
 }
 
 function normalizeInteractRecord(record, index) {
-    const actionType = toNum(record && record.action_type);
-    const visitorGid = toNum(record && record.visitor_gid);
+    // 兼容不同版本字段命名（例如抓包中常见: interact_type / opr_gid / opr_nickname / count）
+    const actionType = toNum(record && (record.action_type !== undefined ? record.action_type : record.interact_type));
+    const visitorGid = toNum(record && (record.visitor_gid !== undefined ? record.visitor_gid : record.opr_gid));
     const cropId = toNum(record && record.crop_id);
-    const cropCount = toNum(record && record.crop_count);
-    const times = toNum(record && record.times);
+    const countFallback = toNum(record && record.count);
+    const cropCount = toNum(record && (record.crop_count !== undefined ? record.crop_count : countFallback));
+    const times = toNum(record && (record.times !== undefined ? record.times : countFallback));
     const level = toNum(record && record.level);
-    const fromType = toNum(record && record.from_type);
-    const serverTimeSec = toTimeSec(record && record.server_time);
+    const fromType = toNum(record && (record.from_type !== undefined ? record.from_type : record.authorized_status));
+    const serverTimeSec = toTimeSec(record && (record.server_time !== undefined ? record.server_time : record.time));
     const extra = (record && record.extra) || {};
     const landId = toNum(extra.land_id);
     const flag1 = toNum(extra.flag1);
     const flag2 = toNum(extra.flag2);
     const cropName = resolveCropName(cropId);
-    const nick = String((record && record.nick) || '').trim() || `GID:${visitorGid}`;
-    const avatarUrl = String((record && record.avatar_url) || '').trim();
+    const nick = String((record && (record.nick !== undefined ? record.nick : record.opr_nickname)) || '').trim() || `GID:${visitorGid}`;
+    const avatarUrl = String((record && (record.avatar_url !== undefined ? record.avatar_url : record.opr_avatar_url)) || '').trim();
 
     const normalized = {
         key: `${serverTimeSec || 0}-${visitorGid || 0}-${actionType || 0}-${index}`,

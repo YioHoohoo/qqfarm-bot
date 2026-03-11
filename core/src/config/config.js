@@ -7,7 +7,7 @@ const CONFIG = {
     serverUrl: 'wss://gate-obt.nqf.qq.com/prod/ws',
     clientVersion: '1.7.0.5_20260306',
     platform: 'qq',              // 平台: qq 或 wx (可通过 --wx 切换为微信)
-    os: 'iOS',
+    os: 'Android',
     heartbeatInterval: 25000,    // 心跳间隔 25秒
     farmCheckInterval: 2000,      // 兼容旧逻辑：自己农场固定巡查间隔(ms)
     friendCheckInterval: 10000,   // 兼容旧逻辑：好友固定巡查间隔(ms)
@@ -18,13 +18,24 @@ const CONFIG = {
     adminPort: Number(process.env.ADMIN_PORT || 3000), // 管理面板 HTTP 端口
     adminPassword: process.env.ADMIN_PASSWORD || 'q0rynks@yBiFSNcZ@rBA2x@hu5M',
     device_info: {
-        client_version: "1.7.0.5_20260306",
-        sys_software: 'iOS 26.2.1',
+        client_version: '1.7.0.5_20260306',
+        sys_software: 'Android 16',
+        cpu: 'qcom',
         network: 'wifi',
-        memory: '7777',
-        device_id: 'iPhone X<iPhone18,3>',
+        memory: 23116,
+        device_id: '23117RK66C',
     },
-    loginSceneId: '1256'
+    loginSceneId: '2079',
+
+    // ============ 好友 open_id 自动维护 ============
+    // SyncAll 回包中连续未返回某 open_id 达到阈值后自动清理
+    friendOpenIdMissPruneThreshold: '3',
+    // 通过访客记录补全 open_id 的开关与频率
+    friendOpenIdAutoDiscoverEnabled: true,
+    friendOpenIdAutoDiscoverIntervalMs: 120000,
+    friendOpenIdAutoDiscoverMaxRecords: 50,
+    friendOpenIdAutoDiscoverMaxGids: 50,
+    friendOpenIdAutoDiscoverBatchSize: 25,
 };
 
 // 生长阶段枚举

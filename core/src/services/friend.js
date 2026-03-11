@@ -139,6 +139,26 @@ function postToMaster(payload) {
     return false;
 }
 
+function reportQQFriendOpenIdsProbe(requestedOpenIds, returnedOpenIdSet) {
+    const requested = Array.isArray(requestedOpenIds) ? requestedOpenIds : [];
+    const returned = returnedOpenIdSet instanceof Set ? returnedOpenIdSet : new Set();
+    if (requested.length === 0) return false;
+
+    const missing = [];
+    for (const openId of requested) {
+        if (!returned.has(openId)) missing.push(openId);
+    }
+
+    return postToMaster({
+        type: 'friend_open_ids_probe',
+        requestedOpenIds: requested,
+        missingOpenIds: missing,
+        totalRequested: requested.length,
+        totalMissing: missing.length,
+        at: Date.now(),
+    });
+}
+
 function addFriendToBlacklist(friendGid, friendName, reason = '') {
     const gid = toNum(friendGid);
     if (!gid) return false;
@@ -256,12 +276,69 @@ async function getAllFriends() {
 
         const body = syncReq.encode(syncReq.create({ open_ids: finalOpenIds })).finish();
         const { body: replyBody } = await sendMsgAsync('gamepb.friendpb.FriendService', 'SyncAll', body);
-        return syncRep.decode(replyBody);
+        const reply = syncRep.decode(replyBody);
+
+        // 回包缺失 open_id 连续计数（由主进程持久化）
+        // 仅统计用户配置的 friendOpenIds（不含 self）
+        if (openIds.length > 0) {
+            const returnedOpenIdSet = new Set();
+            const friends = (reply && Array.isArray(reply.game_friends)) ? reply.game_friends
+                : (reply && Array.isArray(reply.friends)) ? reply.friends
+                    : [];
+            for (const f of friends) {
+                const oid = String(f && f.open_id ? f.open_id : '').trim().toUpperCase();
+                if (isValidOpenId(oid)) returnedOpenIdSet.add(oid);
+            }
+            const requestedFriendOpenIds = finalOpenIds.filter((v) => v !== selfOpenId);
+            reportQQFriendOpenIdsProbe(requestedFriendOpenIds, returnedOpenIdSet);
+        }
+
+        return reply;
     }
 
     const body = types.GetAllFriendsRequest.encode(types.GetAllFriendsRequest.create({})).finish();
     const { body: replyBody } = await sendMsgAsync('gamepb.friendpb.FriendService', 'GetAll', body);
     return types.GetAllFriendsReply.decode(replyBody);
+}
+
+async function getGameFriendsByGids(friendGids) {
+    const reqType = types.GetGameFriendsRequest;
+    const repType = types.GetGameFriendsReply;
+    if (!reqType || !repType) throw new Error('GetGameFriends 接口类型未加载');
+
+    const gids = [];
+    const seen = new Set();
+    const raw = Array.isArray(friendGids) ? friendGids : [];
+    for (const item of raw) {
+        const gid = toNum(item);
+        if (!gid || gid <= 0) continue;
+        if (seen.has(gid)) continue;
+        seen.add(gid);
+        gids.push(gid);
+    }
+    if (gids.length === 0) return [];
+
+    const batchSize = Math.max(1, Math.min(100, Number(CONFIG.friendOpenIdAutoDiscoverBatchSize || 50) || 50));
+    const out = [];
+    const outSeen = new Set();
+
+    for (let i = 0; i < gids.length; i += batchSize) {
+        const batch = gids.slice(i, i + batchSize);
+        const body = reqType.encode(reqType.create({ friend_gids: batch.map((g) => toLong(g)) })).finish();
+        const { body: replyBody } = await sendMsgAsync('gamepb.friendpb.FriendService', 'GetGameFriends', body);
+        const reply = repType.decode(replyBody);
+        const friends = (reply && Array.isArray(reply.game_friends)) ? reply.game_friends
+            : (reply && Array.isArray(reply.friends)) ? reply.friends
+                : [];
+        for (const f of friends) {
+            const gid = toNum(f && f.gid);
+            if (!gid || outSeen.has(gid)) continue;
+            outSeen.add(gid);
+            out.push(f);
+        }
+    }
+
+    return out;
 }
 
 // ============ 好友申请 API (微信同玩) ============
@@ -1297,6 +1374,7 @@ module.exports = {
     checkAndAcceptApplications,
     getOperationLimits,
     getFriendsList,
+    getGameFriendsByGids,
     getFriendLandsDetail,
     doFriendOperation,
 };

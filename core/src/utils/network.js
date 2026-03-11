@@ -363,6 +363,7 @@ function sendLogin(onLoginSuccess) {
             client_version: CONFIG.clientVersion,
             sys_software: CONFIG.device_info.sys_software,
             network: CONFIG.device_info.network,
+            cpu: CONFIG.device_info.cpu,
             memory: CONFIG.device_info.memory,
             device_id: CONFIG.device_info.device_id,
         },

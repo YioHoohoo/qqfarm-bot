@@ -22,6 +22,7 @@ const DEFAULT_FERTILIZER_LAND_TYPES = ['gold', 'black', 'red', 'normal'];
 const FERTILIZER_LAND_TYPE_SET = new Set(DEFAULT_FERTILIZER_LAND_TYPES);
 const DEFAULT_STEAL_PLANT_BLACKLIST = [];
 const DEFAULT_FRIEND_OPEN_IDS = [];
+const DEFAULT_FRIEND_OPEN_ID_MISSES = {};
 const DEFAULT_OFFLINE_REMINDER = {
     channel: 'webhook',
     reloginUrlMode: 'none',
@@ -87,6 +88,8 @@ const DEFAULT_ACCOUNT_CONFIG = {
     friendBlacklist: [],
     // QQ 平台 `FriendService.SyncAll` 所需 open_id 列表（可从抓包中提取并粘贴）
     friendOpenIds: [...DEFAULT_FRIEND_OPEN_IDS],
+    // SyncAll 回包中连续未出现的 open_id 计数（用于自动清理过期 open_id）
+    friendOpenIdMisses: { ...DEFAULT_FRIEND_OPEN_ID_MISSES },
 };
 const ALLOWED_AUTOMATION_KEYS = new Set(Object.keys(DEFAULT_ACCOUNT_CONFIG.automation));
 
@@ -100,6 +103,7 @@ let accountFallbackConfig = {
     intervals: { ...DEFAULT_ACCOUNT_CONFIG.intervals },
     friendQuietHours: { ...DEFAULT_ACCOUNT_CONFIG.friendQuietHours },
     friendOpenIds: [...DEFAULT_FRIEND_OPEN_IDS],
+    friendOpenIdMisses: { ...DEFAULT_FRIEND_OPEN_ID_MISSES },
 };
 
 const globalConfig = {
@@ -245,13 +249,36 @@ function normalizeFriendOpenIds(input, fallback = DEFAULT_FRIEND_OPEN_IDS) {
     }
 
     if (typeof input === 'string') {
-        const matches = input.match(/[0-9a-fA-F]{32}/g) || [];
+        const matches = input.match(/[0-9a-f]{32}/gi) || [];
         for (const token of matches) push(token);
         return normalized;
     }
 
     if (Array.isArray(fallback)) {
         for (const item of fallback) push(item);
+    }
+    return normalized;
+}
+
+function normalizeFriendOpenIdMisses(input, fallback = DEFAULT_FRIEND_OPEN_ID_MISSES) {
+    const normalized = {};
+    const src = (input && typeof input === 'object' && !Array.isArray(input)) ? input : null;
+
+    const push = (rawKey, rawVal) => {
+        const key = String(rawKey || '').trim().toUpperCase();
+        if (!/^[0-9A-F]{32}$/.test(key)) return;
+        const n = Number.parseInt(String(rawVal), 10);
+        if (!Number.isFinite(n) || n <= 0) return;
+        normalized[key] = Math.min(999, n);
+    };
+
+    if (src) {
+        for (const [k, v] of Object.entries(src)) push(k, v);
+        return normalized;
+    }
+
+    if (fallback && typeof fallback === 'object' && !Array.isArray(fallback)) {
+        for (const [k, v] of Object.entries(fallback)) push(k, v);
     }
     return normalized;
 }
@@ -274,13 +301,20 @@ function cloneAccountConfig(base = DEFAULT_ACCOUNT_CONFIG) {
     }
 
     const rawBlacklist = Array.isArray(base.friendBlacklist) ? base.friendBlacklist : [];
+    const friendOpenIds = normalizeFriendOpenIds(base.friendOpenIds, DEFAULT_FRIEND_OPEN_IDS);
+    const friendOpenIdSet = new Set(friendOpenIds);
+    const friendOpenIdMisses = normalizeFriendOpenIdMisses(base.friendOpenIdMisses, DEFAULT_FRIEND_OPEN_ID_MISSES);
+    for (const key of Object.keys(friendOpenIdMisses)) {
+        if (!friendOpenIdSet.has(key)) delete friendOpenIdMisses[key];
+    }
     return {
         ...base,
         automation,
         intervals: { ...(base.intervals || DEFAULT_ACCOUNT_CONFIG.intervals) },
         friendQuietHours: { ...(base.friendQuietHours || DEFAULT_ACCOUNT_CONFIG.friendQuietHours) },
         friendBlacklist: rawBlacklist.map(Number).filter(n => Number.isFinite(n) && n > 0),
-        friendOpenIds: normalizeFriendOpenIds(base.friendOpenIds, DEFAULT_FRIEND_OPEN_IDS),
+        friendOpenIds,
+        friendOpenIdMisses,
         plantingStrategy: ALLOWED_PLANTING_STRATEGIES.includes(String(base.plantingStrategy || ''))
             ? String(base.plantingStrategy)
             : DEFAULT_ACCOUNT_CONFIG.plantingStrategy,
@@ -353,6 +387,20 @@ function normalizeAccountConfig(input, fallback = accountFallbackConfig) {
 
     if (src.friendOpenIds !== undefined) {
         cfg.friendOpenIds = normalizeFriendOpenIds(src.friendOpenIds, cfg.friendOpenIds);
+    }
+
+    if (src.friendOpenIdMisses !== undefined) {
+        cfg.friendOpenIdMisses = normalizeFriendOpenIdMisses(src.friendOpenIdMisses, cfg.friendOpenIdMisses);
+    }
+
+    // misses 只保留当前 open_id 列表里的 key
+    if (cfg.friendOpenIds && Array.isArray(cfg.friendOpenIds)) {
+        const openIdSet = new Set(cfg.friendOpenIds);
+        const misses = normalizeFriendOpenIdMisses(cfg.friendOpenIdMisses, {});
+        for (const key of Object.keys(misses)) {
+            if (!openIdSet.has(key)) delete misses[key];
+        }
+        cfg.friendOpenIdMisses = misses;
     }
 
     return cfg;
@@ -508,6 +556,7 @@ function getConfigSnapshot(accountId) {
         friendQuietHours: { ...cfg.friendQuietHours },
         friendBlacklist: [...(cfg.friendBlacklist || [])],
         friendOpenIds: [...(cfg.friendOpenIds || [])],
+        friendOpenIdMisses: { ...(cfg.friendOpenIdMisses || {}) },
         ui: { ...globalConfig.ui },
         qrLogin: normalizeQrLoginConfig(globalConfig.qrLogin),
     };
@@ -572,6 +621,19 @@ function applyConfigSnapshot(snapshot, options = {}) {
 
     if (cfg.friendOpenIds !== undefined) {
         next.friendOpenIds = normalizeFriendOpenIds(cfg.friendOpenIds, next.friendOpenIds);
+    }
+
+    if (cfg.friendOpenIdMisses !== undefined) {
+        next.friendOpenIdMisses = normalizeFriendOpenIdMisses(cfg.friendOpenIdMisses, next.friendOpenIdMisses);
+    }
+
+    if (next.friendOpenIds && Array.isArray(next.friendOpenIds)) {
+        const openIdSet = new Set(next.friendOpenIds);
+        const misses = normalizeFriendOpenIdMisses(next.friendOpenIdMisses, {});
+        for (const key of Object.keys(misses)) {
+            if (!openIdSet.has(key)) delete misses[key];
+        }
+        next.friendOpenIdMisses = misses;
     }
 
     if (cfg.ui && typeof cfg.ui === 'object') {
@@ -665,6 +727,11 @@ function getFriendBlacklist(accountId) {
 function getFriendOpenIds(accountId) {
     const ids = getAccountConfigSnapshot(accountId).friendOpenIds || [];
     return Array.isArray(ids) ? [...ids] : [];
+}
+
+function getFriendOpenIdMisses(accountId) {
+    const map = getAccountConfigSnapshot(accountId).friendOpenIdMisses || {};
+    return (map && typeof map === 'object' && !Array.isArray(map)) ? { ...map } : {};
 }
 
 function setFriendBlacklist(accountId, list) {
@@ -796,6 +863,7 @@ module.exports = {
     getFriendBlacklist,
     setFriendBlacklist,
     getFriendOpenIds,
+    getFriendOpenIdMisses,
     setFriendOpenIds,
     getUI,
     setUITheme,

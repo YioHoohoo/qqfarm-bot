@@ -2,6 +2,7 @@ const { fork } = require('node:child_process')
 const path = require('node:path')
 const process = require('node:process');
 const { Worker } = require('node:worker_threads')
+const { CONFIG } = require('../config/config')
 const store = require('../models/store')
 const { sendPushooMessage } = require('../services/push')
 const { MiniProgramLoginSession } = require('../services/qrlogin')
@@ -86,6 +87,130 @@ function createRuntimeEngine(options = {}) {
         return true
       }
       return false
+    },
+    mergeFriendOpenIdsDiscovered: (accountId, payload) => {
+      const id = String(accountId || '').trim()
+      if (!id) return { ok: false, addedOpenIds: [], openIdsChanged: false }
+
+      const body = (payload && typeof payload === 'object') ? payload : {}
+      const inputOpenIds = body.openIds || body.open_ids || body.openIdList || body.open_id_list || []
+      const src = Array.isArray(inputOpenIds) ? inputOpenIds : []
+      const addedOpenIds = []
+      const candidates = []
+      const seen = new Set()
+      for (const item of src) {
+        const v = String(item || '').trim().toUpperCase()
+        if (!/^[0-9A-F]{32}$/.test(v)) continue
+        if (seen.has(v)) continue
+        seen.add(v)
+        candidates.push(v)
+      }
+      if (candidates.length === 0) return { ok: true, addedOpenIds, openIdsChanged: false }
+
+      const currentOpenIds = store.getFriendOpenIds ? store.getFriendOpenIds(id) : []
+      const current = Array.isArray(currentOpenIds) ? currentOpenIds : []
+      const set = new Set(current)
+
+      for (const openId of candidates) {
+        if (set.has(openId)) continue
+        set.add(openId)
+        addedOpenIds.push(openId)
+      }
+
+      if (addedOpenIds.length === 0) {
+        return { ok: true, addedOpenIds, openIdsChanged: false }
+      }
+
+      const nextOpenIds = [...current, ...addedOpenIds]
+      store.applyConfigSnapshot({ friendOpenIds: nextOpenIds }, { accountId: id })
+      return { ok: true, addedOpenIds, openIdsChanged: true }
+    },
+    syncFriendOpenIdsProbe: (accountId, payload) => {
+      const id = String(accountId || '').trim()
+      if (!id) return { ok: false, removedOpenIds: [], openIdsChanged: false, missChanged: false }
+
+      const normalizeOpenIdList = (input) => {
+        const src = Array.isArray(input) ? input : []
+        const seen = new Set()
+        const out = []
+        for (const item of src) {
+          const v = String(item || '').trim().toUpperCase()
+          if (!/^[0-9A-F]{32}$/.test(v)) continue
+          if (seen.has(v)) continue
+          seen.add(v)
+          out.push(v)
+        }
+        return out
+      }
+
+      const shallowEqualNumberMap = (a, b) => {
+        const aa = (a && typeof a === 'object') ? a : {}
+        const bb = (b && typeof b === 'object') ? b : {}
+        const aKeys = Object.keys(aa)
+        const bKeys = Object.keys(bb)
+        if (aKeys.length !== bKeys.length) return false
+        for (const k of aKeys) {
+          if (!Object.prototype.hasOwnProperty.call(bb, k)) return false
+          if (Number(aa[k]) !== Number(bb[k])) return false
+        }
+        return true
+      }
+
+      const body = (payload && typeof payload === 'object') ? payload : {}
+      const requestedOpenIds = normalizeOpenIdList(body.requestedOpenIds)
+      const missingOpenIds = normalizeOpenIdList(body.missingOpenIds)
+      if (requestedOpenIds.length === 0) return { ok: true, removedOpenIds: [], openIdsChanged: false, missChanged: false }
+
+      const currentOpenIds = store.getFriendOpenIds ? store.getFriendOpenIds(id) : []
+      const currentSet = new Set(Array.isArray(currentOpenIds) ? currentOpenIds : [])
+      if (currentSet.size === 0) return { ok: true, removedOpenIds: [], openIdsChanged: false, missChanged: false }
+
+      const effectiveRequested = requestedOpenIds.filter(v => currentSet.has(v))
+      if (effectiveRequested.length === 0) return { ok: true, removedOpenIds: [], openIdsChanged: false, missChanged: false }
+
+      const missingSet = new Set(missingOpenIds.filter(v => currentSet.has(v)))
+
+      const prevMisses = store.getFriendOpenIdMisses ? store.getFriendOpenIdMisses(id) : {}
+      const nextMisses = {}
+      for (const [k, v] of Object.entries(prevMisses || {})) {
+        if (!currentSet.has(k)) continue
+        const n = Number.parseInt(String(v), 10)
+        if (!Number.isFinite(n) || n <= 0) continue
+        nextMisses[k] = Math.min(999, n)
+      }
+
+      for (const openId of effectiveRequested) {
+        if (missingSet.has(openId)) {
+          nextMisses[openId] = Math.min(999, (nextMisses[openId] || 0) + 1)
+        }
+        else {
+          delete nextMisses[openId] // reset consecutive misses
+        }
+      }
+
+      const removedOpenIds = []
+      for (const [openId, count] of Object.entries(nextMisses)) {
+        if (!currentSet.has(openId)) continue
+        if (Number(count) >= Number(CONFIG.friendOpenIdMissPruneThreshold || 3)) removedOpenIds.push(openId)
+      }
+
+      const removedSet = new Set(removedOpenIds)
+      const nextOpenIds = removedOpenIds.length > 0
+        ? (Array.isArray(currentOpenIds) ? currentOpenIds.filter(v => !removedSet.has(v)) : [])
+        : (Array.isArray(currentOpenIds) ? currentOpenIds : [])
+      for (const openId of removedSet) delete nextMisses[openId]
+
+      const openIdsChanged = nextOpenIds.length !== (Array.isArray(currentOpenIds) ? currentOpenIds.length : 0)
+      const missChanged = !shallowEqualNumberMap(prevMisses, nextMisses)
+
+      if (openIdsChanged || missChanged) {
+        const snapshot = openIdsChanged
+          ? { friendOpenIds: nextOpenIds, friendOpenIdMisses: nextMisses }
+          : { friendOpenIdMisses: nextMisses }
+        store.applyConfigSnapshot(snapshot, { accountId: id })
+      }
+
+      return { ok: true, removedOpenIds, openIdsChanged, missChanged }
     },
     broadcastConfigToWorkers,
     onStatusSync: (accountId, status, accountName) => {

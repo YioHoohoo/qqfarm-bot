@@ -190,6 +190,23 @@ function startAdminServer(dataProvider) {
         }
     });
 
+    // API: WSS 调试（自定义 Proto 请求）
+    app.post('/api/wss/debug', async (req, res) => {
+        const body = (req.body && typeof req.body === 'object') ? req.body : {};
+        const id = getAccId(req) || resolveAccId(body.accountId || body.accountRef || body.id || '');
+        if (!id) return res.status(400).json({ ok: false, error: 'Missing x-account-id (or accountId)' });
+
+        try {
+            if (!provider || typeof provider.wssDebug !== 'function') {
+                return res.status(500).json({ ok: false, error: 'DataProvider does not support wss debug' });
+            }
+            const data = await provider.wssDebug(id, body);
+            return res.json({ ok: true, data });
+        } catch (e) {
+            return handleApiError(res, e);
+        }
+    });
+
     app.post('/api/logout', (req, res) => {
         const token = req.adminToken;
         if (token) {
