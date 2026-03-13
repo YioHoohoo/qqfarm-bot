@@ -161,11 +161,22 @@ function selectAccount(account: any) {
           </div>
         </div>
 
-        <div class="mt-2 flex items-center justify-between border-t border-gray-100 pt-4 dark:border-gray-700">
+          <div class="mt-2 flex items-center justify-between border-t border-gray-100 pt-4 dark:border-gray-700">
           <div class="flex items-center gap-2 text-sm text-gray-500">
             <span class="flex items-center gap-1">
-              <div class="h-2 w-2 rounded-full" :class="acc.running ? 'bg-green-500' : 'bg-gray-300'" />
-              {{ acc.running ? '运行中' : '已停止' }}
+              <div
+                class="h-2 w-2 rounded-full"
+                :class="acc.running
+                  ? (acc.connected ? 'bg-green-500' : 'bg-red-500')
+                  : 'bg-gray-300'"
+              />
+              {{ acc.running ? (acc.connected ? '运行中' : '未连接') : '已停止' }}
+            </span>
+            <span
+              v-if="acc.running && !acc.connected && acc.wsError && Number(acc.wsError.code) === 400"
+              class="rounded bg-red-50 px-2 py-0.5 text-xs text-red-600 dark:bg-red-900/20 dark:text-red-400"
+            >
+              Code失效
             </span>
           </div>
 

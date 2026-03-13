@@ -174,6 +174,8 @@ function createDataProvider(options) {
             data.accounts.forEach((a) => {
                 const worker = workers[a.id];
                 a.running = !!worker;
+                a.connected = !!(worker && worker.status && worker.status.connection && worker.status.connection.connected);
+                a.wsError = worker ? (worker.wsError || null) : null;
                 if (worker && worker.status && worker.status.status && worker.status.status.name) {
                     a.nick = worker.status.status.name;
                 }

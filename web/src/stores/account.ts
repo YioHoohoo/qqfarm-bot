@@ -10,6 +10,12 @@ export interface Account {
   uin?: number
   platform?: string
   running?: boolean
+  connected?: boolean
+  wsError?: {
+    code: number
+    message?: string
+    at?: number
+  } | null
   // Add other fields as discovered
 }
 
