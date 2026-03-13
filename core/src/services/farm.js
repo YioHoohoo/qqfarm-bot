@@ -5,7 +5,7 @@
 const protobuf = require('protobufjs');
 const { CONFIG, PlantPhase, PHASE_NAMES } = require('../config/config');
 const { getPlantNameBySeedId, getPlantName, getPlantExp, formatGrowTime, getPlantGrowTime, getAllSeeds, getPlantById, getPlantBySeedId, getSeedImageBySeedId } = require('../config/gameConfig');
-const { isAutomationOn, getPreferredSeed, getAutomation, getPlantingStrategy, getBagSeedPriority, setPlantingStrategy } = require('../models/store');
+const { isAutomationOn, getPreferredSeed, getAutomation, getPlantingStrategy, getBagSeedPriority } = require('../models/store');
 const { sendMsgAsync, getUserState, networkEvents, getWsErrorState } = require('../utils/network');
 const { types } = require('../utils/proto');
 const { toLong, toNum, getServerTimeSec, toTimeSec, log, logWarn, sleep } = require('../utils/utils');
@@ -846,19 +846,23 @@ async function autoPlantEmptyLands(deadLandIds, emptyLandIds) {
     });
 
     // 2. 背包种子优先模式
+    let remainingLandsToPlant = [...landsToPlant];
     if (strategy === 'bag_priority') {
-        const planted = await plantFromBagSeeds(landsToPlant);
-        if (planted) return;
-        // 背包种子用完或空地不足，继续检查是否需要切换策略
+        const result = await plantFromBagSeeds(remainingLandsToPlant);
+        if (result && Array.isArray(result.remainingLandIds)) {
+            remainingLandsToPlant = result.remainingLandIds;
+        }
+        // 背包种子已覆盖全部空地
+        if (remainingLandsToPlant.length === 0) return;
     }
 
     // 3. 非背包优先模式，或背包种子已用完，从商店购买
-    await plantFromShop(landsToPlant, state);
+    await plantFromShop(remainingLandsToPlant, state);
 }
 
 /**
  * 从背包种子种植
- * @returns {boolean} true=已种植或等待中，false=需要从商店购买
+ * @returns {Promise<{ok: boolean, planted: number, plantedLandIds: number[], remainingLandIds: number[]}>}
  */
 async function plantFromBagSeeds(landsToPlant) {
     const { getBagSeeds } = require('./warehouse');
@@ -871,15 +875,14 @@ async function plantFromBagSeeds(landsToPlant) {
         });
     } catch (e) {
         logWarn('背包', `获取背包种子失败: ${e.message}`);
-        return false;
+        return { ok: false, planted: 0, plantedLandIds: [], remainingLandIds: Array.isArray(landsToPlant) ? landsToPlant : [] };
     }
 
     if (!bagSeeds || bagSeeds.length === 0) {
-        log('种植', '背包无种子，自动切换为最高等级策略', {
-            module: 'farm', event: 'bag_empty', result: 'switch_strategy'
+        log('种植', '背包无种子，改为从商店购买', {
+            module: 'farm', event: 'bag_empty', result: 'fallback_shop'
         });
-        setPlantingStrategy(undefined, 'level');
-        return false;
+        return { ok: true, planted: 0, plantedLandIds: [], remainingLandIds: Array.isArray(landsToPlant) ? landsToPlant : [] };
     }
 
     // 按用户设置的优先级排序
@@ -889,83 +892,79 @@ async function plantFromBagSeeds(landsToPlant) {
     });
     const sortedSeeds = sortBagSeedsByPriority(bagSeeds, priority);
 
-    // 按用户优先级遍历种子，找到第一个可用的 1x1 种子
-    let availableSeed = null;
+    const pending = (Array.isArray(landsToPlant) ? landsToPlant : []).map(v => toNum(v)).filter(Boolean);
+    const pendingSet = new Set(pending);
+    const plantedLandIds = [];
+    let totalPlanted = 0;
+    const usedSeeds = [];
 
     for (const seed of sortedSeeds) {
-        if (seed.count <= 0) continue;
-        const size = seed.plantSize || 1;
+        if (pending.length === 0) break;
+        if (!seed || seed.count <= 0) continue;
 
-        // 跳过大尺寸种子 (2x2 等)
+        const size = seed.plantSize || 1;
+        // 跳过大尺寸种子 (2x2 等)，后续可扩展
         if (size > 1) {
-            log('种植', `${seed.name} 是 ${size}x${size} 种子，暂不支持，跳过`, {
-                module: 'farm', event: 'bag_seed_skip_large', seedId: seed.seedId, size
-            });
             continue;
         }
 
-        // 1x1 种子直接使用
-        if (landsToPlant.length > 0) {
-            availableSeed = seed;
+        const plantCount = Math.min(pending.length, Number(seed.count) || 0);
+        if (plantCount <= 0) continue;
+
+        const landsToUse = pending.slice(0, plantCount);
+        try {
+            const { planted, plantedLandIds: seedPlantedLandIds } = await plantSeeds(
+                seed.seedId,
+                landsToUse,
+                { maxPlantCount: plantCount }
+            );
+            const plantedList = Array.isArray(seedPlantedLandIds) ? seedPlantedLandIds : [];
+            if (plantedList.length > 0) {
+                usedSeeds.push({ seedId: seed.seedId, name: seed.name, count: plantedList.length, requiredLevel: seed.requiredLevel });
+                for (const landId of plantedList) {
+                    plantedLandIds.push(landId);
+                    pendingSet.delete(toNum(landId));
+                }
+                // 重新计算剩余空地，保持原有顺序
+                for (let i = pending.length - 1; i >= 0; i -= 1) {
+                    const landId = pending[i];
+                    if (!pendingSet.has(landId)) pending.splice(i, 1);
+                }
+            }
+            totalPlanted += Number(planted || 0);
+        } catch (e) {
+            logWarn('种植', `背包种子种植失败: ${e.message}`);
             break;
         }
+        if (pending.length > 0) await sleep(80);
     }
-
-    if (!availableSeed) {
-        // 检查是否有 1x1 种子
-        const has1x1Seeds = sortedSeeds.some(s => s.count > 0 && (s.plantSize || 1) === 1);
-        if (!has1x1Seeds) {
-            log('种植', '背包无可用 1x1 种子，自动切换为最高等级策略', {
-                module: 'farm', event: 'bag_seeds_exhausted', result: 'switch_strategy'
-            });
-            setPlantingStrategy(undefined, 'level');
-            return false;
-        }
-        return true;
-    }
-
-    // 计算能种多少
-    const needCount = Math.min(landsToPlant.length, availableSeed.count);
-    if (needCount <= 0) {
-        return true;
-    }
-
-    // 种植背包种子
-    let plantedLands = [];
-    let totalPlanted = 0;
-
-    const landsToUse = landsToPlant.slice(0, needCount);
-    try {
-        const { planted, plantedLandIds } = await plantSeeds(
-            availableSeed.seedId,
-            landsToUse,
-            { maxPlantCount: needCount }
-        );
-        totalPlanted = planted;
-        plantedLands = plantedLandIds;
-    } catch (e) {
-        logWarn('种植', `背包种子种植失败: ${e.message}`);
-        return false;
-    }
-
-    const isEvent = availableSeed.requiredLevel >= 200;
-    const seedLabel = isEvent ? `[活动] ${availableSeed.name}` : availableSeed.name;
-    log('种植', `使用背包种子 ${seedLabel} 种植 ${totalPlanted} 块地`, {
-        module: 'farm',
-        event: 'bag_seed_plant',
-        result: 'ok',
-        seedId: availableSeed.seedId,
-        count: totalPlanted,
-        isEvent,
-    });
 
     if (totalPlanted > 0) {
+        const seedSummary = usedSeeds
+            .map(s => `${s.requiredLevel >= 200 ? '[活动] ' : ''}${s.name}x${s.count}`)
+            .join(', ');
+        log('种植', `使用背包种子种植 ${totalPlanted} 块地${seedSummary ? ` (${seedSummary})` : ''}`, {
+            module: 'farm',
+            event: 'bag_seed_plant',
+            result: 'ok',
+            count: totalPlanted,
+            used: usedSeeds,
+        });
         recordOperation('plant', totalPlanted);
+        await runFertilizerByConfig(plantedLandIds);
     }
 
-    // 施肥
-    await runFertilizerByConfig(plantedLands);
-    return true;
+    const hasAny1x1Seeds = sortedSeeds.some(s => s && s.count > 0 && (s.plantSize || 1) === 1);
+    if (!hasAny1x1Seeds) {
+        // 仅有大尺寸种子（暂不支持），改为从商店购买
+        log('种植', '背包无可用 1x1 种子，改为从商店购买', {
+            module: 'farm',
+            event: 'bag_seeds_exhausted',
+            result: 'fallback_shop',
+        });
+    }
+
+    return { ok: true, planted: totalPlanted, plantedLandIds, remainingLandIds: pending };
 }
 
 /**
@@ -1026,10 +1025,10 @@ async function plantFromShop(landsToPlant, state) {
         module: 'warehouse', event: 'seed_pick', seedId: bestSeed.seedId, price: bestSeed.price
     });
 
-    let needCount = landsToPlant.length;
+    let targetCount = landsToPlant.length;
     if (landFootprint > 1) {
-        needCount = Math.floor(landsToPlant.length / landFootprint);
-        if (needCount <= 0) {
+        targetCount = Math.floor(landsToPlant.length / landFootprint);
+        if (targetCount <= 0) {
             log('种植', `${seedName} 需要至少 ${landFootprint} 块空地才能合并种植，当前仅 ${landsToPlant.length} 块可用，已跳过`, {
                 module: 'farm',
                 event: 'plant_seed',
@@ -1041,47 +1040,111 @@ async function plantFromShop(landsToPlant, state) {
             return;
         }
     }
-    const totalCost = bestSeed.price * needCount;
-    if (totalCost > state.gold) {
-        logWarn('商店', `金币不足! 需要 ${totalCost} 金币, 当前 ${state.gold} 金币`, {
-            module: 'farm', event: 'seed_buy_skip', result: 'insufficient_gold', need: totalCost, current: state.gold
+
+    // 购买前先检查背包已有数量，避免买多
+    let bagSeedCount = 0;
+    try {
+        const { getBagSeeds } = require('./warehouse');
+        const bagSeeds = await getBagSeeds();
+        const match = Array.isArray(bagSeeds)
+            ? bagSeeds.find(s => toNum(s && s.seedId) === toNum(bestSeed.seedId))
+            : null;
+        bagSeedCount = Math.max(0, toNum(match && match.count));
+    } catch (e) {
+        logWarn('背包', `获取背包种子数量失败: ${e.message}`, {
+            module: 'warehouse',
+            event: 'bag_seed_count',
+            result: 'error',
+            seedId: bestSeed.seedId,
         });
-        const canBuy = Math.floor(state.gold / bestSeed.price);
-        if (canBuy <= 0) return;
-        needCount = canBuy;
-        log('商店', plantSize > 1 ? `金币有限，只尝试种植 ${canBuy} 组 ${plantSize}x${plantSize} 作物` : `金币有限，只种 ${canBuy} 块地`);
+        bagSeedCount = 0;
     }
 
+    const desiredCount = Math.max(0, targetCount);
+    const neededToBuy = Math.max(0, desiredCount - bagSeedCount);
+    let buyCount = neededToBuy;
+
+    if (buyCount > 0 && bestSeed.price > 0) {
+        const maxAffordable = Math.floor(state.gold / bestSeed.price);
+        if (maxAffordable <= 0 && bagSeedCount <= 0) {
+            logWarn('商店', `金币不足! 需要 ${bestSeed.price * buyCount} 金币, 当前 ${state.gold} 金币`, {
+                module: 'farm',
+                event: 'seed_buy_skip',
+                result: 'insufficient_gold',
+                need: bestSeed.price * buyCount,
+                current: state.gold,
+                seedId: bestSeed.seedId,
+                desired: desiredCount,
+                bag: bagSeedCount,
+            });
+            return;
+        }
+        if (maxAffordable < buyCount) {
+            logWarn('商店', `金币不足! 计划种植 ${desiredCount}，背包已有 ${bagSeedCount}，仍需购买 ${buyCount}，但金币仅够买 ${maxAffordable}`, {
+                module: 'farm',
+                event: 'seed_buy_partial',
+                result: 'insufficient_gold',
+                desired: desiredCount,
+                bag: bagSeedCount,
+                needBuy: buyCount,
+                canBuy: maxAffordable,
+                price: bestSeed.price,
+                current: state.gold,
+                seedId: bestSeed.seedId,
+            });
+            buyCount = Math.max(0, maxAffordable);
+        }
+    }
+
+    const plantCount = Math.min(desiredCount, bagSeedCount + buyCount);
+    if (plantCount <= 0) return;
+
     let actualSeedId = bestSeed.seedId;
-    try {
-        const buyReply = await buyGoods(bestSeed.goodsId, needCount, bestSeed.price);
-        if (buyReply.get_items && buyReply.get_items.length > 0) {
-            const gotItem = buyReply.get_items[0];
-            const gotId = toNum(gotItem.id);
-            if (gotId > 0) actualSeedId = gotId;
-        }
-        if (buyReply.cost_items) {
-            for (const item of buyReply.cost_items) {
-                state.gold -= toNum(item.count);
+    if (buyCount > 0) {
+        try {
+            const buyReply = await buyGoods(bestSeed.goodsId, buyCount, bestSeed.price);
+            if (buyReply.get_items && buyReply.get_items.length > 0) {
+                const gotItem = buyReply.get_items[0];
+                const gotId = toNum(gotItem.id);
+                if (gotId > 0) actualSeedId = gotId;
             }
+            if (buyReply.cost_items) {
+                for (const item of buyReply.cost_items) {
+                    state.gold -= toNum(item.count);
+                }
+            }
+            const boughtName = getPlantNameBySeedId(actualSeedId);
+            log('购买', `已购买 ${boughtName}种子 x${buyCount}, 花费 ${bestSeed.price * buyCount} 金币`, {
+                module: 'warehouse',
+                event: 'seed_buy',
+                result: 'ok',
+                seedId: actualSeedId,
+                count: buyCount,
+                cost: bestSeed.price * buyCount,
+                bag: bagSeedCount,
+                desired: desiredCount,
+            });
+        } catch (e) {
+            logWarn('购买', e.message);
+            return;
         }
-        const boughtName = getPlantNameBySeedId(actualSeedId);
-        log('购买', `已购买 ${boughtName}种子 x${needCount}, 花费 ${bestSeed.price * needCount} 金币`, {
+    } else if (bagSeedCount > 0) {
+        log('商店', `背包已有 ${seedName}种子 x${bagSeedCount}，无需购买`, {
             module: 'warehouse',
-            event: 'seed_buy',
-            result: 'ok',
+            event: 'seed_buy_skip',
+            result: 'bag_enough',
             seedId: actualSeedId,
-            count: needCount,
-            cost: bestSeed.price * needCount,
+            bag: bagSeedCount,
+            desired: desiredCount,
         });
-    } catch (e) {
-        logWarn('购买', e.message);
-        return;
     }
 
     let plantedLands = [];
     try {
-        const { planted, plantedLandIds, occupiedLandIds } = await plantSeeds(actualSeedId, landsToPlant, { maxPlantCount: needCount });
+        // 若商店返回的 seedId 与预期不同，则保守只按购买数量尝试种植，避免超出背包实际数量
+        const availableCount = actualSeedId === bestSeed.seedId ? (bagSeedCount + buyCount) : buyCount;
+        const maxPlantCount = Math.max(0, Math.min(plantCount, availableCount));
+        const { planted, plantedLandIds, occupiedLandIds } = await plantSeeds(actualSeedId, landsToPlant, { maxPlantCount });
         const occupiedCount = occupiedLandIds.length > 0 ? occupiedLandIds.length : planted;
         log('种植', plantSize > 1
             ? `已种植 ${planted} 组 ${plantSize}x${plantSize} 作物，占用 ${occupiedCount} 块地 (${occupiedLandIds.join(',')})`

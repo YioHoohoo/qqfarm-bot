@@ -398,6 +398,8 @@ function stopUnifiedScheduler() {
 
 function applyRuntimeConfig(snapshot, syncNow = false) {
     const prevAuto = getAutomation();
+    const prevSnapshot = getConfigSnapshot() || {};
+    const prevFriendOpenIds = Array.isArray(prevSnapshot.friendOpenIds) ? prevSnapshot.friendOpenIds : [];
     
     // 配置校验
     const validatedSnapshot = snapshot;
@@ -434,6 +436,45 @@ function applyRuntimeConfig(snapshot, syncNow = false) {
         refreshFriendCheckLoop(200);
         resetUnifiedSchedule();
         scheduleUnifiedNextTick();
+
+        // open_id 变更后主动刷新一次好友列表（SyncAll），避免需要等待下一轮调度
+        try {
+            const nextSnapshot = getConfigSnapshot() || {};
+            const nextFriendOpenIds = Array.isArray(nextSnapshot.friendOpenIds) ? nextSnapshot.friendOpenIds : [];
+            const normalizeOpenIds = (list) => {
+                const out = [];
+                const seen = new Set();
+                for (const item of (Array.isArray(list) ? list : [])) {
+                    const v = String(item || '').trim().toUpperCase();
+                    if (!v) continue;
+                    if (seen.has(v)) continue;
+                    seen.add(v);
+                    out.push(v);
+                }
+                return out;
+            };
+            const a = normalizeOpenIds(prevFriendOpenIds);
+            const b = normalizeOpenIds(nextFriendOpenIds);
+            const setA = new Set(a);
+            const setB = new Set(b);
+            let changed = setA.size !== setB.size;
+            if (!changed) {
+                for (const v of setA) {
+                    if (!setB.has(v)) {
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+            if (changed) {
+                workerScheduler.setTimeoutTask('friend_list_refresh_after_open_id_change', 800, () => {
+                    if (!loginReady) return;
+                    getFriendsList().catch(() => null);
+                });
+            }
+        } catch {
+            // ignore
+        }
 
         // 保存设置后若“自动处理日常”开启，则立即执行一次
         const hasAutomationPayload = !!(snapshot && snapshot.automation && typeof snapshot.automation === 'object');

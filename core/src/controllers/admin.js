@@ -661,6 +661,7 @@ function startAdminServer(dataProvider) {
 
             // 检查是否仅修改了备注信息
             let onlyRemarkChanged = false;
+            let codeChanged = false;
             if (isUpdate) {
                 const oldAccounts = provider.getAccounts();
                 const oldAccount = oldAccounts.accounts.find(a => a.id === payload.id);
@@ -671,6 +672,16 @@ function startAdminServer(dataProvider) {
                     if (onlyIdAndName) {
                         onlyRemarkChanged = true;
                     }
+
+                    if (Object.prototype.hasOwnProperty.call(payload, 'code')) {
+                        const nextCode = String(payload.code || '');
+                        const prevCode = String(oldAccount.code || '');
+                        codeChanged = nextCode !== prevCode;
+                    }
+                }
+                else if (Object.prototype.hasOwnProperty.call(payload, 'code')) {
+                    // 无法比对旧值时：只要带 code 字段，视为变更，便于自动拉起 worker
+                    codeChanged = true;
                 }
             }
 
@@ -689,9 +700,13 @@ function startAdminServer(dataProvider) {
             if (!isUpdate) {
                 const newAcc = data.accounts[data.accounts.length - 1];
                 if (newAcc) provider.startAccount(newAcc.id);
-            } else if (wasRunning && !onlyRemarkChanged) {
-                // 如果是更新，且之前在运行，且不是仅修改备注，则重启
-                provider.restartAccount(payload.id);
+            } else if (!onlyRemarkChanged) {
+                // 如果是更新：在运行则重启；若 code 有变更且账号未运行，则自动启动（用于“更新 code 后自动重连”）
+                if (wasRunning) {
+                    provider.restartAccount(payload.id);
+                } else if (codeChanged) {
+                    provider.startAccount(payload.id);
+                }
             }
             res.json({ ok: true, data });
         } catch (e) {
