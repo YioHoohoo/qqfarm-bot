@@ -31,6 +31,15 @@ let wsErrorState = { code: 0, at: 0, message: '' };
 
 const networkScheduler = createScheduler('network_remote');
 
+// ============ 自动重连控制 ============
+let reconnectAttempt = 0;
+let reconnectDisabled = false;
+let reconnectDisabledReason = '';
+let lastSessionConnectAttemptAt = 0;
+let preLoginCloseCount = 0;
+let preLoginCloseWindowStartAt = 0;
+let lastGameCloseInfo = { at: 0, code: 0, reason: '' };
+
 // ============ 用户状态 (登录后设置) ============
 const userState = {
     gid: 0,
@@ -130,12 +139,69 @@ function sendTransportRequest(payload, timeoutMs = 10000) {
 
 function scheduleAutoReconnect() {
     if (!savedLoginCallback) return;
+    if (reconnectDisabled) return;
     networkScheduler.clear('auto_reconnect');
-    networkScheduler.setTimeoutTask('auto_reconnect', 5000, () => {
+    const baseDelay = 5000;
+    const maxDelay = 60000;
+    const exp = Math.min(10, Math.max(0, reconnectAttempt));
+    const delay = Math.min(maxDelay, Math.round(baseDelay * (1.7 ** exp)));
+    const jitter = Math.floor(Math.random() * 800);
+    const finalDelay = Math.max(500, delay + jitter);
+
+    networkScheduler.setTimeoutTask('auto_reconnect', finalDelay, () => {
         if (!savedLoginCallback) return;
-        log('系统', '[Transport] 尝试自动重连...');
+        if (reconnectDisabled) return;
+        reconnectAttempt += 1;
+        log('系统', `[Transport] 尝试自动重连... (#${reconnectAttempt}, ${finalDelay}ms)`);
         reconnect(null);
     });
+}
+
+function resetReconnectCircuit(reason = '') {
+    reconnectAttempt = 0;
+    reconnectDisabled = false;
+    reconnectDisabledReason = String(reason || '');
+    preLoginCloseCount = 0;
+    preLoginCloseWindowStartAt = 0;
+    lastGameCloseInfo = { at: 0, code: 0, reason: '' };
+}
+
+function disableReconnectAndHintCodeUpdate(hintMessage) {
+    reconnectDisabled = true;
+    reconnectDisabledReason = String(hintMessage || '');
+    networkScheduler.clear('auto_reconnect');
+
+    const message = reconnectDisabledReason || '连接反复关闭，可能需要更新 Code';
+    setWsErrorState(400, message);
+    networkEvents.emit('ws_error', { code: 400, message });
+    logWarn('系统', `[Transport] 已暂停自动重连: ${message}`);
+}
+
+function recordPreLoginCloseFailure(closeInfo, context = '') {
+    if (userState.gid) return; // logged in (or had a gid) -> do not treat as code failure
+    const now = Date.now();
+    const sinceAttempt = lastSessionConnectAttemptAt ? (now - lastSessionConnectAttemptAt) : Number.POSITIVE_INFINITY;
+    // Only count failures that happen during/soon after a session_connect attempt
+    if (!Number.isFinite(sinceAttempt) || sinceAttempt > 25000) return;
+
+    const reason = String(closeInfo && closeInfo.reason ? closeInfo.reason : '').trim().toLowerCase();
+    if (reason === 'requested' || reason === 'server_close') return;
+
+    const windowMs = 2 * 60 * 1000;
+    if (!preLoginCloseWindowStartAt || (now - preLoginCloseWindowStartAt) > windowMs) {
+        preLoginCloseWindowStartAt = now;
+        preLoginCloseCount = 0;
+    }
+    preLoginCloseCount += 1;
+
+    const maxFailures = 5;
+    if (preLoginCloseCount < maxFailures) return;
+
+    const code = Number(closeInfo && closeInfo.code) || 0;
+    const reasonText = String(closeInfo && closeInfo.reason ? closeInfo.reason : '').trim();
+    const suffix = reasonText ? `, reason=${reasonText}` : '';
+    const ctx = context ? ` (${context})` : '';
+    disableReconnectAndHintCodeUpdate(`连接反复关闭(code=${code || 'unknown'}${suffix})${ctx}，可能 Code 已失效，请更新 Code`);
 }
 
 function handleTransportMessage(data) {
@@ -171,9 +237,18 @@ function handleTransportMessage(data) {
         const state = String(msg.state || '').toLowerCase();
         if (state === 'open') {
             gameReadyState = WebSocket.OPEN;
+            // game transport is up again; do not reset reconnectAttempt here (wait for login success)
         } else if (state === 'close') {
+            const code = Number(msg.code || 0) || 0;
+            const reason = String(msg.reason || '').trim();
+            lastGameCloseInfo = { at: Date.now(), code, reason };
             gameReadyState = WebSocket.CLOSED;
-            cleanup('连接关闭');
+            const parts = [];
+            if (code) parts.push(`code=${code}`);
+            if (reason) parts.push(`reason=${reason}`);
+            const detail = parts.length > 0 ? `(${parts.join(', ')})` : '';
+            cleanup(detail ? `连接关闭${detail}` : '连接关闭');
+            recordPreLoginCloseFailure(lastGameCloseInfo, 'ws_state.close');
             scheduleAutoReconnect();
         }
         return;
@@ -185,6 +260,10 @@ function handleTransportMessage(data) {
         const message = String(msg.message || '');
         if (code) setWsErrorState(code, message);
         networkEvents.emit('ws_error', { code, message });
+        // Gate handshake 400 基本可视为 code/参数失效：避免无限重连刷屏
+        if (code === 400 && !userState.gid) {
+            disableReconnectAndHintCodeUpdate(message || '连接被拒绝(code=400)，可能 Code 已失效，请更新 Code');
+        }
     }
 }
 
@@ -440,6 +519,9 @@ async function sendLogin(onLoginSuccess) {
             console.warn('');
         }
 
+        // 登录成功后，视为连接稳定，重置重连退避与失败计数
+        resetReconnectCircuit('login_ok');
+
         startHeartbeat();
         if (onLoginSuccess) onLoginSuccess();
     } catch (err) {
@@ -488,7 +570,16 @@ function startHeartbeat() {
 // ============ 对外 API ============
 function connect(code, onLoginSuccess) {
     savedLoginCallback = onLoginSuccess;
-    if (code) savedCode = code;
+    if (code) {
+        const next = String(code || '');
+        const prev = String(savedCode || '');
+        if (next && next !== prev) {
+            clearWsErrorState();
+            resetReconnectCircuit('code_changed');
+        }
+        savedCode = next;
+    }
+    lastSessionConnectAttemptAt = Date.now();
 
     const gameUrl = `${CONFIG.serverUrl}?platform=${CONFIG.platform}&os=${CONFIG.os}&ver=${CONFIG.clientVersion}&code=${savedCode}&openID=`;
 
@@ -500,6 +591,7 @@ function connect(code, onLoginSuccess) {
     }).catch((err) => {
         logWarn('系统', `[Transport] 连接失败: ${err && err.message ? err.message : String(err)}`);
         gameReadyState = WebSocket.CLOSED;
+        // If we recently got repeated close events before login, reconnect may already be disabled
         scheduleAutoReconnect();
     });
 }

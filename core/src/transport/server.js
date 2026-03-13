@@ -219,9 +219,20 @@ class TransportSession {
                 this.handleGameMessage(data);
             });
 
-            ws.on('close', (code) => {
-                this.broadcast({ type: 'ws_state', state: 'close', readyState: WebSocket.CLOSED, code: Number(code || 0) });
-                this.rejectAllPending(`连接关闭(code=${code})`);
+            ws.on('close', (code, reasonRaw) => {
+                // ws close may provide a reason (Buffer)
+                const reasonText = reasonRaw ? String(Buffer.from(reasonRaw).toString('utf8')) : '';
+                const reason = reasonText.length > 120 ? reasonText.slice(0, 120) : reasonText;
+
+                this.broadcast({
+                    type: 'ws_state',
+                    state: 'close',
+                    readyState: WebSocket.CLOSED,
+                    code: Number(code || 0),
+                    reason,
+                });
+                const suffix = reason ? `, reason=${reason}` : '';
+                this.rejectAllPending(`连接关闭(code=${code}${suffix})`);
                 try {
                     ws.removeAllListeners();
                 } catch { }
@@ -231,7 +242,7 @@ class TransportSession {
                 if (!settled) {
                     settled = true;
                     finalize();
-                    reject(new Error(`连接关闭(code=${Number(code || 0)})`));
+                    reject(new Error(`连接关闭(code=${Number(code || 0)}${suffix})`));
                 }
             });
 
