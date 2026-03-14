@@ -194,7 +194,7 @@ function recordPreLoginCloseFailure(closeInfo, context = '') {
     }
     preLoginCloseCount += 1;
 
-    const maxFailures = 5;
+    const maxFailures = 3;
     if (preLoginCloseCount < maxFailures) return;
 
     const code = Number(closeInfo && closeInfo.code) || 0;

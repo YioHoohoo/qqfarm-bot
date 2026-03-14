@@ -301,9 +301,19 @@ function formatInteractTime(timestamp: number) {
         <div class="i-carbon-user-multiple" />
         好友
       </h2>
-      <div v-if="friends.length" class="text-sm text-gray-500">
-        <span v-if="searchKeyword.trim()">筛选 {{ filteredFriends.length }} / {{ friends.length }} 名好友</span>
-        <span v-else>共 {{ friends.length }} 名好友</span>
+      <div class="flex items-center gap-2">
+        <div v-if="friends.length" class="text-sm text-gray-500">
+          <span v-if="searchKeyword.trim()">筛选 {{ filteredFriends.length }} / {{ friends.length }} 名好友</span>
+          <span v-else>共 {{ friends.length }} 名好友</span>
+        </div>
+        <button
+          v-if="status?.connection?.connected && currentAccountId"
+          class="rounded bg-gray-100 px-3 py-1.5 text-xs text-gray-600 transition disabled:cursor-not-allowed dark:bg-gray-700 hover:bg-gray-200 dark:text-gray-300 disabled:opacity-60 dark:hover:bg-gray-600"
+          :disabled="loading || statusLoading"
+          @click.stop="loadFriends"
+        >
+          {{ (loading || statusLoading) ? '刷新中...' : '刷新好友' }}
+        </button>
       </div>
     </div>
 

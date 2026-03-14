@@ -188,8 +188,18 @@ async function discoverFriendOpenIdsFromVisitors() {
 
         const maxRecords = Math.max(1, Number(CONFIG.friendOpenIdAutoDiscoverMaxRecords || 50) || 50);
         const maxGids = Math.max(1, Number(CONFIG.friendOpenIdAutoDiscoverMaxGids || 50) || 50);
+        const parseOpenIdFromUrl = (url) => {
+            const text = String(url || '').trim();
+            if (!text) return '';
+            const match = text.match(/[0-9a-f]{32}/i);
+            if (!match) return '';
+            const oid = String(match[0] || '').trim().toUpperCase();
+            return isValidOpenId(oid) ? oid : '';
+        };
         const gids = [];
         const gidSeen = new Set();
+        const openIds = [];
+        const openIdSeen = new Set();
 
         for (const record of list.slice(0, maxRecords)) {
             const gid = toNum(record && (record.oprGid || record.opr_gid || record.visitorGid || record.visitor_gid));
@@ -198,32 +208,54 @@ async function discoverFriendOpenIdsFromVisitors() {
             if (gidSeen.has(gid)) continue;
             gidSeen.add(gid);
             gids.push(gid);
+
+            // 访客记录的 avatar_url 中通常包含对方 open_id（抓包数据示例: thirdqq.qlogo.cn/.../<OPEN_ID>/100）
+            // 优先从 URL 解析，避免 GetGameFriends 不可用时无法补全。
+            const url = record && (record.avatarUrl || record.avatar_url || record.opr_avatar_url || '');
+            const oidFromUrl = parseOpenIdFromUrl(url);
+            if (oidFromUrl && (!selfOpenId || oidFromUrl !== selfOpenId) && !openIdSeen.has(oidFromUrl)) {
+                openIdSeen.add(oidFromUrl);
+                openIds.push(oidFromUrl);
+            }
+
             if (gids.length >= maxGids) break;
         }
 
-        if (gids.length === 0) return false;
-
-        const friends = await getGameFriendsByGids(gids).catch(() => []);
-        const openIds = [];
-        const openIdSeen = new Set();
-        const rawFriends = Array.isArray(friends) ? friends : [];
-
-        for (const f of rawFriends) {
-            const oid = String(f && f.open_id ? f.open_id : '').trim().toUpperCase();
-            if (!isValidOpenId(oid)) continue;
-            if (selfOpenId && oid === selfOpenId) continue;
-            if (openIdSeen.has(oid)) continue;
-            openIdSeen.add(oid);
-            openIds.push(oid);
+        // 兜底：通过 gid 查询 open_id（部分环境 avatar_url 可能缺失）
+        if (gids.length > 0 && openIds.length < maxGids) {
+            const friends = await getGameFriendsByGids(gids).catch(() => []);
+            const rawFriends = Array.isArray(friends) ? friends : [];
+            for (const f of rawFriends) {
+                const oid = String(f && f.open_id ? f.open_id : '').trim().toUpperCase();
+                if (!isValidOpenId(oid)) continue;
+                if (selfOpenId && oid === selfOpenId) continue;
+                if (openIdSeen.has(oid)) continue;
+                openIdSeen.add(oid);
+                openIds.push(oid);
+                if (openIds.length >= maxGids) break;
+            }
         }
 
         if (openIds.length === 0) return false;
 
+        // 仅发送“新增候选”，避免重复刷消息；主进程会做最终去重/持久化
+        const snapshot = getConfigSnapshot() || {};
+        const currentOpenIds = Array.isArray(snapshot.friendOpenIds) ? snapshot.friendOpenIds : [];
+        const currentSet = new Set(currentOpenIds.map(v => String(v || '').trim().toUpperCase()).filter(Boolean));
+        const newlyDiscovered = openIds.filter(oid => oid && !currentSet.has(oid));
+        if (newlyDiscovered.length === 0) return false;
+
         sendToMaster({
             type: 'friend_open_ids_discovered',
-            openIds,
-            source: 'interact_records',
+            openIds: newlyDiscovered,
+            source: 'interact_records.avatar_url+gid_lookup',
             at: Date.now(),
+        });
+        log('好友', `从访客记录补全 open_id: +${newlyDiscovered.length}`, {
+            module: 'friend',
+            event: 'friend_open_ids_discover',
+            result: 'ok',
+            candidates: newlyDiscovered.length,
         });
         return true;
     } catch (e) {
